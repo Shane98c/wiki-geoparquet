@@ -15,6 +15,7 @@ Use --test to validate with a small subset first.
 import argparse
 import gzip
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -322,37 +323,56 @@ def step5_pagelinks(geo_pages, lt_id_to_pid, test_mode):
     """Count inbound article links for each geo page."""
     print(f"\n→ Step 5/5: Streaming pagelinks (~6.9GB)...")
 
+    # Fast regex for integer-only pagelinks tuples — runs in C, not Python.
+    # Matches (pl_from, 0, pl_target_id) — namespace 0 only.
+    _NS0_RE = re.compile(rb'\(\d+,0,(\d+)\)')
+
     inlink_counts = {}
-    total = 0
+    lines = 0
     hits = 0
+    filename = DUMP_FILES["pagelinks"]
+    local_path = os.path.join(DUMP_LOCAL_DIR, filename)
+
+    if os.path.exists(local_path):
+        print(f"  Reading local: {local_path}")
+        gz = gzip.open(local_path, 'rb')
+    else:
+        url = f"{DUMP_BASE_URL}/{filename}"
+        print(f"  Streaming: {url}")
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        resp = urllib.request.urlopen(req)
+        gz = gzip.GzipFile(fileobj=resp)
+
+    insert_lines = 0
     limit = 500 if test_mode else None
 
-    for t in stream_dump("pagelinks", "pagelinks", max_insert_lines=limit):
-        total += 1
-        # Columns: pl_from, pl_from_namespace, pl_target_id
-        if len(t) < 3:
+    for line_bytes in gz:
+        if not line_bytes.startswith(b'INSERT'):
             continue
 
-        # Only count links from articles (namespace 0),
-        # not from talk pages, templates, user pages, etc.
-        if t[1] != 0:
-            continue
+        insert_lines += 1
+        if limit and insert_lines > limit:
+            break
 
-        target_id = t[2]
-        if target_id in lt_id_to_pid:
-            pid = lt_id_to_pid[target_id]
-            inlink_counts[pid] = inlink_counts.get(pid, 0) + 1
-            hits += 1
+        lines += 1
+        for m in _NS0_RE.finditer(line_bytes):
+            target_id = int(m.group(1))
+            if target_id in lt_id_to_pid:
+                pid = lt_id_to_pid[target_id]
+                inlink_counts[pid] = inlink_counts.get(pid, 0) + 1
+                hits += 1
 
-        if total % 5_000_000 == 0:
-            print(f"  ...scanned {total:,} links, {hits:,} hits")
+        if lines % 500 == 0:
+            print(f"  ...{lines:,} INSERT lines, {hits:,} hits")
+
+    gz.close()
 
     # Store counts
     for pid, count in inlink_counts.items():
         geo_pages[pid]["inlink_count"] = count
 
     with_inlinks = sum(1 for p in geo_pages.values() if p.get("inlink_count", 0) > 0)
-    print(f"  Scanned {total:,} links → {with_inlinks:,} pages have inlinks")
+    print(f"  Scanned {lines:,} INSERT lines, {hits:,} hits → {with_inlinks:,} pages have inlinks")
 
 
 # ── Main ──────────────────────────────────────────────────────
@@ -444,8 +464,24 @@ def main():
     db = duckdb.connect()
     db.execute("INSTALL spatial; LOAD spatial;")
 
-    db.execute("CREATE TABLE raw AS SELECT * FROM rows")
+    import pyarrow as pa
+
+    table = pa.table({
+        "page_id": pa.array([r["page_id"] for r in rows], type=pa.int32()),
+        "qid": pa.array([r["qid"] for r in rows], type=pa.string()),
+        "label": pa.array([r["label"] for r in rows], type=pa.string()),
+        "description": pa.array([r["description"] for r in rows], type=pa.string()),
+        "latitude": pa.array([r["latitude"] for r in rows], type=pa.float64()),
+        "longitude": pa.array([r["longitude"] for r in rows], type=pa.float64()),
+        "gt_type": pa.array([r["gt_type"] for r in rows], type=pa.string()),
+        "page_len": pa.array([r["page_len"] for r in rows], type=pa.int32()),
+        "inlink_count": pa.array([r["inlink_count"] for r in rows], type=pa.int32()),
+        "wikipedia_url": pa.array([r["wikipedia_url"] for r in rows], type=pa.string()),
+        "image_url": pa.array([r["image_url"] for r in rows], type=pa.string()),
+    })
     del rows  # free memory
+
+    db.register("raw", table)
 
     row_group_size = min(75_000, max(5_000, len(geo_pages) // 10))
 
