@@ -1,0 +1,70 @@
+name: Monthly Build
+
+on:
+  schedule:
+    - cron: "0 6 1 * *" # 1st of each month, 6am UTC
+  workflow_dispatch: # manual trigger
+
+jobs:
+  build:
+    runs-on: ubuntu-latest-4-cores
+    timeout-minutes: 330 # 5.5 hours
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Cache tippecanoe binary
+        id: cache-tippecanoe
+        uses: actions/cache@v4
+        with:
+          path: ~/tippecanoe
+          key: tippecanoe-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build tippecanoe from source
+        if: steps.cache-tippecanoe.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libsqlite3-dev zlib1g-dev
+          git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe-src
+          cd /tmp/tippecanoe-src
+          make -j$(nproc)
+          mkdir -p ~/tippecanoe
+          cp tippecanoe ~/tippecanoe/
+
+      - name: Download Wikipedia dumps
+        run: make download
+        timeout-minutes: 120
+
+      - name: Extract GeoParquet
+        run: make extract
+        timeout-minutes: 150
+
+      - name: Build PMTiles
+        run: make tiles
+        env:
+          TIPPECANOE: ~/tippecanoe/tippecanoe
+
+      - name: Validate
+        run: make validate
+
+      - name: Create release
+        run: |
+          TAG=$(date +v%Y-%m)
+          gh release create "$TAG" \
+            data/wikipedia_geotagged.parquet \
+            data/wikipedia_geotagged.pmtiles \
+            --title "Wikipedia Geo $TAG" \
+            --notes "Monthly rebuild from Wikipedia dumps." \
+            || echo "Release $TAG already exists, skipping."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,20 @@
+# Data (generated, not committed)
+data/
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# uv
+uv.lock
+
+# Secrets
+.env
+
+# OS
+.DS_Store
+
+# Claude Code
+.claude/
