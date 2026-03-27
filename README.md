@@ -97,6 +97,7 @@ const map = new maplibregl.Map({
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
+- [DuckDB CLI](https://duckdb.org/docs/installation/) (with spatial extension)
 - [tippecanoe](https://github.com/felt/tippecanoe) (build from main — `--drop-by-attribute-as-needed` is merged but not yet in a release)
 
 ```bash

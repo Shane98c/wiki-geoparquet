@@ -31,6 +31,13 @@ jobs:
           path: ~/tippecanoe
           key: tippecanoe-${{ runner.os }}-${{ runner.arch }}
 
+      - name: Install DuckDB CLI
+        run: |
+          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          unzip -o duckdb.zip -d ~/bin
+          echo "$HOME/bin" >> $GITHUB_PATH
+          ~/bin/duckdb -c "INSTALL spatial;"
+
       - name: Build tippecanoe from source
         if: steps.cache-tippecanoe.outputs.cache-hit != 'true'
         run: |
@@ -50,9 +57,7 @@ jobs:
         timeout-minutes: 150
 
       - name: Build PMTiles
-        run: make tiles
-        env:
-          TIPPECANOE: ~/tippecanoe/tippecanoe
+        run: make tiles TIPPECANOE=~/tippecanoe/tippecanoe
 
       - name: Validate
         run: make validate

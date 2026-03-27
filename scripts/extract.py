@@ -419,33 +419,14 @@ def main():
     print(f"  Avg page_len: {avg_len:,.0f} bytes")
     print(f"  Avg inlinks:  {avg_inlinks:,.0f}")
 
-    # ── Write intermediate parquet, then DuckDB → GeoParquet ──
-    # Step 1: Write raw rows as plain parquet (fast, via pyarrow)
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    tmp_file = OUTPUT_FILE.replace(".parquet", "_tmp.parquet")
-    table = pa.table({
-        "page_id": pa.array([r["page_id"] for r in rows], type=pa.int32()),
-        "qid": pa.array([r["qid"] for r in rows], type=pa.string()),
-        "label": pa.array([r["label"] for r in rows], type=pa.string()),
-        "description": pa.array([r["description"] for r in rows], type=pa.string()),
-        "latitude": pa.array([r["latitude"] for r in rows], type=pa.float64()),
-        "longitude": pa.array([r["longitude"] for r in rows], type=pa.float64()),
-        "gt_type": pa.array([r["gt_type"] for r in rows], type=pa.string()),
-        "page_len": pa.array([r["page_len"] for r in rows], type=pa.int32()),
-        "inlink_count": pa.array([r["inlink_count"] for r in rows], type=pa.int32()),
-        "wikipedia_url": pa.array([r["wikipedia_url"] for r in rows], type=pa.string()),
-        "image_url": pa.array([r["image_url"] for r in rows], type=pa.string()),
-    })
-    pq.write_table(table, tmp_file, compression="zstd")
-    del table, rows  # free memory before DuckDB
-
-    # Step 2: DuckDB adds geometry, Hilbert-sorts, writes GeoParquet
+    # ── DuckDB: add geometry, Hilbert-sort, write GeoParquet ──
     print(f"\n→ Writing GeoParquet (Hilbert-sorted, with bbox covering)...")
     import duckdb
     db = duckdb.connect()
     db.execute("INSTALL spatial; LOAD spatial;")
+
+    db.execute("CREATE TABLE raw AS SELECT * FROM rows")
+    del rows  # free memory
 
     row_group_size = min(75_000, max(5_000, len(geo_pages) // 10))
 
@@ -455,7 +436,7 @@ def main():
                 ST_Point(longitude, latitude) AS geometry,
                 page_id, qid, label, description, gt_type,
                 page_len, inlink_count, wikipedia_url, image_url
-            FROM '{tmp_file}'
+            FROM raw
             ORDER BY ST_Hilbert(ST_Point(longitude, latitude))
         ) TO '{OUTPUT_FILE}'
         WITH (
@@ -465,7 +446,6 @@ def main():
         )
     """)
 
-    os.remove(tmp_file)
     db.close()
 
     file_size_mb = os.path.getsize(OUTPUT_FILE) / (1024 * 1024)
