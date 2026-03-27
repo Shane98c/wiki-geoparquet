@@ -27,6 +27,7 @@ Grab the latest release from [GitHub Releases](../../releases/latest):
 | `inlink_count` | int32 | Number of Wikipedia articles linking here |
 | `wikipedia_url` | string | Full article URL |
 | `image_url` | string | Wikimedia Commons image URL |
+| `bbox` | struct | Per-row bounding box (xmin, ymin, xmax, ymax) for spatial predicate pushdown |
 
 ## Quick start
 

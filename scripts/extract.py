@@ -8,7 +8,7 @@ Streams these dumps from dumps.wikimedia.org (~12GB total):
   - linktarget: link target ID mappings (~1.4GB)
   - pagelinks:  internal links for inlink counts (~6.9GB)
 
-Outputs a Hilbert-sorted GeoParquet file.
+Outputs a Hilbert-sorted GeoParquet 1.1 file with bbox covering metadata.
 Use --test to validate with a small subset first.
 """
 
@@ -467,9 +467,17 @@ def main():
 
     db.close()
 
+    # Add bbox covering metadata for spatial predicate pushdown
+    print(f"\n→ Adding bbox covering metadata...")
+    import subprocess
+    subprocess.run(
+        ["uv", "run", "gpio", "add", "bbox", OUTPUT_FILE, OUTPUT_FILE],
+        check=True,
+    )
+
     file_size_mb = os.path.getsize(OUTPUT_FILE) / (1024 * 1024)
     print(f"\nWritten to {OUTPUT_FILE} ({file_size_mb:.1f} MB)")
-    print("Done! Ready for build_pmtiles.py")
+    print("Done!")
 
 
 if __name__ == "__main__":

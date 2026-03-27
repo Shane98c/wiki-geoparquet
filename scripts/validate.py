@@ -94,10 +94,14 @@ def main():
               geom_col.get("encoding") == "WKB")
 
     has_bbox = "covering" in geom_col
+    check("Has covering bbox metadata", has_bbox,
+          "missing — spatial predicate pushdown will not work")
+
     if has_bbox:
-        print("  INFO: Has covering bbox (spatial predicate pushdown enabled)")
-    else:
-        print("  INFO: No covering bbox (optional, Hilbert sorting provides spatial locality)")
+        bbox_col = db.execute(f"""
+            SELECT count(*) FROM parquet_schema('{PARQUET_FILE}') WHERE name = 'bbox'
+        """).fetchone()[0]
+        check("bbox struct column exists", bbox_col > 0, "covering declared but bbox column missing")
 
     # gt_type coverage
     gt_rows = db.execute(f"""
