@@ -8,7 +8,7 @@ Streams these dumps from dumps.wikimedia.org (~12GB total):
   - linktarget: link target ID mappings (~1.4GB)
   - pagelinks:  internal links for inlink counts (~6.9GB)
 
-Outputs a Hilbert-sorted GeoParquet file with bbox row group metadata.
+Outputs a Hilbert-sorted GeoParquet file.
 Use --test to validate with a small subset first.
 """
 
@@ -69,7 +69,21 @@ def parse_insert_tuples(line_bytes, table_name):
                     c = data[pos:pos + 1]
                     if c == b'\\':
                         pos += 1
-                        parts.append(data[pos:pos + 1])
+                        esc = data[pos:pos + 1]
+                        if esc == b'n':
+                            parts.append(b'\n')
+                        elif esc == b't':
+                            parts.append(b'\t')
+                        elif esc == b'r':
+                            parts.append(b'\r')
+                        elif esc == b'0':
+                            parts.append(b'\x00')
+                        elif esc == b'b':
+                            parts.append(b'\x08')
+                        elif esc == b'Z':
+                            parts.append(b'\x1a')
+                        else:
+                            parts.append(esc)  # handles \\, \', \"
                         pos += 1
                     elif c == b"'":
                         pos += 1
@@ -305,7 +319,7 @@ def step4_linktarget(geo_pages, test_mode):
 
 
 def step5_pagelinks(geo_pages, lt_id_to_pid, test_mode):
-    """Count inbound links for each geo page."""
+    """Count inbound article links for each geo page."""
     print(f"\n→ Step 5/5: Streaming pagelinks (~6.9GB)...")
 
     inlink_counts = {}
@@ -317,6 +331,11 @@ def step5_pagelinks(geo_pages, lt_id_to_pid, test_mode):
         total += 1
         # Columns: pl_from, pl_from_namespace, pl_target_id
         if len(t) < 3:
+            continue
+
+        # Only count links from articles (namespace 0),
+        # not from talk pages, templates, user pages, etc.
+        if t[1] != 0:
             continue
 
         target_id = t[2]
@@ -420,7 +439,7 @@ def main():
     print(f"  Avg inlinks:  {avg_inlinks:,.0f}")
 
     # ── DuckDB: add geometry, Hilbert-sort, write GeoParquet ──
-    print(f"\n→ Writing GeoParquet (Hilbert-sorted, with bbox covering)...")
+    print(f"\n→ Writing GeoParquet (Hilbert-sorted)...")
     import duckdb
     db = duckdb.connect()
     db.execute("INSTALL spatial; LOAD spatial;")
