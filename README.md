@@ -2,16 +2,16 @@
 
 Every geotagged English Wikipedia article as [GeoParquet](https://geoparquet.org/) + [PMTiles](https://docs.protomaps.com/pmtiles/).
 
-**1,236,747 articles** with coordinates, inlink counts, article length, Wikidata QIDs, images, and descriptions. Updated monthly from Wikipedia SQL dumps.
+All ~1.2M geotagged articles with coordinates, inlink counts, article length, Wikidata QIDs, images, and descriptions. Updated monthly from Wikipedia SQL dumps.
 
 ## Downloads
 
 Grab the latest release from [GitHub Releases](../../releases/latest):
 
-| File | Size | Description |
-|------|------|-------------|
-| `wikipedia_geotagged.parquet` | ~76 MB | GeoParquet, Hilbert-sorted for spatial queries |
-| `wikipedia_geotagged.pmtiles` | ~282 MB | Vector tiles, auto-zoom with overzoom, drops by article length |
+| File | Description |
+|------|-------------|
+| `wikipedia_geotagged.parquet` | GeoParquet, Hilbert-sorted with bbox covering |
+| `wikipedia_geotagged.pmtiles` | Vector tiles, auto-zoom with overzoom, drops by article length |
 
 ## Schema
 
@@ -27,7 +27,6 @@ Grab the latest release from [GitHub Releases](../../releases/latest):
 | `inlink_count` | int32 | Number of Wikipedia articles linking here |
 | `wikipedia_url` | string | Full article URL |
 | `image_url` | string | Wikimedia Commons image URL |
-| `bbox` | struct | Per-row bounding box (xmin, ymin, xmax, ymax) for spatial predicate pushdown |
 
 ## Quick start
 
@@ -75,7 +74,7 @@ const map = new maplibregl.Map({
     sources: {
       wikipedia: {
         type: 'vector',
-        url: 'pmtiles://https://github.com/.../releases/latest/download/wikipedia_geotagged.pmtiles',
+        url: 'pmtiles://https://github.com/Shane98c/wiki-geoparquet/releases/latest/download/wikipedia_geotagged.pmtiles',
       }
     },
     layers: [{
@@ -124,13 +123,13 @@ make build
 make release
 ```
 
-The full pipeline takes ~2 hours. The extract step streams ~12 GB of Wikipedia SQL dumps and builds the GeoParquet. The tiles step converts to PMTiles via tippecanoe.
+The extract step streams ~12 GB of Wikipedia SQL dumps and builds the GeoParquet. The tiles step pipes DuckDB to tippecanoe for PMTiles.
 
 ### Individual steps
 
 ```bash
 make download    # Fetch Wikipedia SQL dumps
-make extract     # Dumps → GeoParquet (~107 min)
+make extract     # Dumps → GeoParquet
 make tiles       # GeoParquet → PMTiles via tippecanoe
 make validate    # Run quality checks
 make clean       # Remove generated files
