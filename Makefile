@@ -54,7 +54,7 @@ build: extract tiles validate
 	@echo "Build complete."
 
 release:
-	@TAG=$$(date +v%Y-%m); \
+	@TAG=$$(date +v%Y-%m-%d); \
 	echo "Creating release $$TAG..."; \
 	gh release create $$TAG \
 		$(PARQUET) \

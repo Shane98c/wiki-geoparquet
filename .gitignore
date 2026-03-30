@@ -8,7 +8,7 @@ __pycache__/
 .venv/
 
 # uv
-uv.lock
+# uv.lock is committed for reproducible CI builds
 
 # Secrets
 .env

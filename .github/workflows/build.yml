@@ -22,14 +22,14 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Cache tippecanoe binary
         id: cache-tippecanoe
         uses: actions/cache@v4
         with:
           path: ~/tippecanoe
-          key: tippecanoe-${{ runner.os }}-${{ runner.arch }}
+          key: tippecanoe-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/workflows/build.yml') }}
 
       - name: Install DuckDB CLI
         run: |
@@ -64,12 +64,16 @@ jobs:
 
       - name: Create release
         run: |
-          TAG=$(date +v%Y-%m)
-          gh release create "$TAG" \
-            data/wikipedia_geotagged.parquet \
-            data/wikipedia_geotagged.pmtiles \
-            --title "Wikipedia Geo $TAG" \
-            --notes "Monthly rebuild from Wikipedia dumps." \
-            || echo "Release $TAG already exists, skipping."
+          TAG=$(date +v%Y-%m-%d)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping."
+          else
+            gh release create "$TAG" \
+              data/wikipedia_geotagged.parquet \
+              data/wikipedia_geotagged.pmtiles \
+              --target "$GITHUB_SHA" \
+              --title "Wikipedia Geo $TAG" \
+              --notes "Monthly rebuild from Wikipedia dumps."
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
