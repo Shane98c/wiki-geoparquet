@@ -5,6 +5,9 @@ on:
     - cron: "0 6 1 * *" # 1st of each month, 6am UTC
   workflow_dispatch: # manual trigger
 
+env:
+  TIPPECANOE_REF: b3c548c4  # pinned: includes --drop-by-attribute-as-needed
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/tippecanoe
-          key: tippecanoe-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/workflows/build.yml') }}
+          key: tippecanoe-${{ runner.os }}-${{ runner.arch }}-${{ env.TIPPECANOE_REF }}
 
       - name: Install DuckDB CLI
         run: |
@@ -42,8 +45,9 @@ jobs:
         if: steps.cache-tippecanoe.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update && sudo apt-get install -y libsqlite3-dev zlib1g-dev
-          git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe-src
+          git clone https://github.com/felt/tippecanoe.git /tmp/tippecanoe-src
           cd /tmp/tippecanoe-src
+          git checkout ${{ env.TIPPECANOE_REF }}
           make -j$(nproc)
           mkdir -p ~/tippecanoe
           cp tippecanoe ~/tippecanoe/
@@ -65,15 +69,14 @@ jobs:
       - name: Create release
         run: |
           TAG=$(date +v%Y-%m-%d)
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists, skipping."
-          else
+          gh release view "$TAG" >/dev/null 2>&1 || \
             gh release create "$TAG" \
-              data/wikipedia_geotagged.parquet \
-              data/wikipedia_geotagged.pmtiles \
               --target "$GITHUB_SHA" \
               --title "Wikipedia Geo $TAG" \
               --notes "Monthly rebuild from Wikipedia dumps."
-          fi
+          gh release upload "$TAG" \
+            data/wikipedia_geotagged.parquet \
+            data/wikipedia_geotagged.pmtiles \
+            --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

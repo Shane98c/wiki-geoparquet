@@ -56,11 +56,15 @@ build: extract tiles validate
 release:
 	@TAG=$$(date +v%Y-%m-%d); \
 	echo "Creating release $$TAG..."; \
-	gh release create $$TAG \
+	gh release view $$TAG >/dev/null 2>&1 || \
+		gh release create $$TAG \
+			--target $$(git rev-parse HEAD) \
+			--title "Wikipedia Geo $$TAG" \
+			--notes "Monthly rebuild from Wikipedia dumps."; \
+	gh release upload $$TAG \
 		$(PARQUET) \
 		$(PMTILES) \
-		--title "Wikipedia Geo $$TAG" \
-		--notes "Monthly rebuild from Wikipedia dumps."
+		--clobber
 
 clean:
 	rm -f data/*.parquet data/*.pmtiles
