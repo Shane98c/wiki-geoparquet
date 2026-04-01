@@ -1,4 +1,4 @@
-.PHONY: download extract tiles validate build release clean
+.PHONY: download extract tiles validate build release upload clean
 
 DUMP_BASE   := https://dumps.wikimedia.org/enwiki/latest
 DUMP_DIR    := data/dumps
@@ -65,6 +65,12 @@ release:
 		$(PARQUET) \
 		$(PMTILES) \
 		--clobber
+
+upload:
+	wrangler r2 object put wiki-geoparquet/v1/wikipedia_geotagged.parquet \
+		--file $(PARQUET) --content-type application/vnd.apache.parquet --remote
+	wrangler r2 object put wiki-geoparquet/v1/wikipedia_geotagged.pmtiles \
+		--file $(PMTILES) --content-type application/vnd.pmtiles --remote
 
 clean:
 	rm -f data/*.parquet data/*.pmtiles

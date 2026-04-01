@@ -16,5 +16,9 @@ __pycache__/
 # OS
 .DS_Store
 
+# Cloudflare
+.wrangler/
+r2-cors.json
+
 # Claude Code
 .claude/
