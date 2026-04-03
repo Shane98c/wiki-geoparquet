@@ -1,29 +1,25 @@
 # wiki-geoparquet
 
-English Wikipedia main-namespace articles with primary Earth coordinates, as
+English Wikipedia main-namespace articles with Earth coordinates, as
 [GeoParquet](https://geoparquet.org/) +
 [PMTiles](https://docs.protomaps.com/pmtiles/).
 
 Coordinates, inlink counts, article length, Wikidata QIDs, image links, and
 descriptions. Updated monthly from Wikipedia SQL dumps.
 
-## Demo
+## Data
 
-[Live map](https://shane98c.github.io/wiki-geoparquet/demo.html) — browse and search all articles on a globe.
+All files are on R2 with CORS enabled — query directly from the browser or any
+Parquet-aware tool:
 
-## Downloads
+| File                                                                                                                | Description                                                     |
+| ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| [`wikipedia_geotagged.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet) | GeoParquet, Hilbert-sorted with bbox covering                   |
+| [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles) | Vector tiles, auto-zoom with overzoom, drops by article length  |
+| [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet)       | Lightweight search index (label + coordinates, sorted by label) |
 
-Grab the latest release from [GitHub Releases](https://github.com/Shane98c/wiki-geoparquet/releases/latest).
-The data files are gitignored — download them into `data/` for the local examples below.
-
-| File                          | Description                                                    |
-| ----------------------------- | -------------------------------------------------------------- |
-| `wikipedia_geotagged.parquet` | GeoParquet, Hilbert-sorted with bbox covering                  |
-| `wikipedia_geotagged.pmtiles` | Vector tiles, auto-zoom with overzoom, drops by article length |
-
-Files are also available on R2 with CORS for browser use:
-- [`wikipedia_geotagged.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet)
-- [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles)
+Pinned versions are also available on
+[GitHub Releases](https://github.com/Shane98c/wiki-geoparquet/releases/latest).
 
 ## Schema
 
@@ -35,6 +31,7 @@ Files are also available on R2 with CORS for browser use:
 | `label`         | string    | Article title                                                 |
 | `description`   | string    | Short description from `wikibase-shortdesc`                   |
 | `gt_type`       | string    | Wikipedia geo classification (city, mountain, landmark, etc.) |
+| `gt_primary`    | bool      | Whether coordinates are the article's primary geo_tag         |
 | `page_len`      | int32     | Article length in bytes                                       |
 | `inlink_count`  | int32     | Number of namespace-0 pagelinks pointing here                 |
 | `wikipedia_url` | string    | Full article URL                                              |
@@ -50,32 +47,17 @@ INSTALL spatial; LOAD spatial;
 
 -- Find the most notable geotagged articles
 SELECT label, inlink_count, page_len, gt_type, ST_AsText(geometry)
-FROM 'data/wikipedia_geotagged.parquet'
+FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet'
 ORDER BY inlink_count DESC
 LIMIT 20;
 
 -- Spatial query: articles within 50km of Paris
 SELECT label, inlink_count, gt_type
-FROM 'data/wikipedia_geotagged.parquet'
-WHERE ST_DWithin(
-    geometry,
-    ST_Point(2.3522, 48.8566)::GEOMETRY,
-    0.45  -- ~50km in degrees at mid-latitudes
-)
+FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet'
 ORDER BY inlink_count DESC;
 ```
 
-### View PMTiles
-
-Open in [pmtiles.io](https://pmtiles.io) by pasting the release URL, or serve
-locally:
-
-```bash
-npx http-server data/ --cors -p 8081
-# Then open: https://pmtiles.io/#url=http://localhost:8081/wikipedia_geotagged.pmtiles
-```
-
-### Use in MapLibre
+### Use pmtiles in MapLibre
 
 ```js
 import { Protocol } from "pmtiles";
@@ -118,7 +100,8 @@ const map = new maplibregl.Map({
 ## How it works
 
 1. Streams 5 Wikipedia SQL dump files (~12 GB) and extracts geotagged pages with
-   primary Earth coordinates, filtering to main-namespace non-redirect articles
+   Earth coordinates (preferring primary, falling back to non-primary),
+   filtering to main-namespace non-redirect articles
 2. Joins with page metadata, Wikidata properties, and pagelinks-based inlink
    counts
 3. Writes Hilbert-sorted GeoParquet with bbox covering via DuckDB spatial
