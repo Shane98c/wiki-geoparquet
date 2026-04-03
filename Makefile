@@ -10,12 +10,13 @@ TIPPECANOE  ?= tippecanoe
 
 download:
 	mkdir -p $(DUMP_DIR)
-	@pids=""; fail=0; \
+	@pids=""; fail=0; i=0; \
 	for f in $(DUMPS); do \
 		echo "Downloading enwiki-latest-$$f.sql.gz..."; \
-		curl -fL --retry 3 -C - -o $(DUMP_DIR)/enwiki-latest-$$f.sql.gz \
+		curl -fsSL --retry 5 --retry-delay 5 -C - -o $(DUMP_DIR)/enwiki-latest-$$f.sql.gz \
 			$(DUMP_BASE)/enwiki-latest-$$f.sql.gz & \
 		pids="$$pids $$!"; \
+		i=$$((i+1)); if [ $$i -lt 5 ]; then sleep 2; fi; \
 	done; \
 	for pid in $$pids; do \
 		wait $$pid || fail=1; \
