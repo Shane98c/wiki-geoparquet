@@ -6,7 +6,7 @@ on:
   workflow_dispatch: # manual trigger
 
 env:
-  TIPPECANOE_REF: b3c548c4  # pinned: includes --drop-by-attribute-as-needed
+  TIPPECANOE_REF: 2.79.0  # pinned: includes --drop-by-attribute-as-needed
 
 jobs:
   build:
