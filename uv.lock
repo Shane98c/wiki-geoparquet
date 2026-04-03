@@ -1380,12 +1380,14 @@ source = { virtual = "." }
 dependencies = [
     { name = "duckdb" },
     { name = "geoparquet-io" },
+    { name = "pyarrow" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = ">=1.0.0" },
     { name = "geoparquet-io" },
+    { name = "pyarrow", specifier = ">=15.0.0" },
 ]
 
 [[package]]

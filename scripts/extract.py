@@ -183,23 +183,36 @@ def step1_geo_tags(test_mode):
         lon = t[5]
         gt_type = t[7] if len(t) > 7 else ""
 
-        # Filter: earth coordinates, primary tag only
-        if globe != 'earth' or primary != 1:
+        # Filter: earth coordinates with valid ranges
+        if globe != 'earth':
             continue
         if not (isinstance(lat, (int, float)) and isinstance(lon, (int, float))):
             continue
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             continue
 
-        # Keep first (primary) entry per page
-        if page_id not in geo_pages:
+        # Prefer primary coords; accept non-primary if it's the only entry
+        if page_id in geo_pages:
+            if geo_pages[page_id]["gt_primary"]:
+                continue  # already have a primary coord, skip
+            if primary == 1:
+                # upgrade to primary
+                geo_pages[page_id] = {
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "gt_type": gt_type or "",
+                    "gt_primary": True,
+                }
+        else:
             geo_pages[page_id] = {
                 "lat": float(lat),
                 "lon": float(lon),
                 "gt_type": gt_type or "",
+                "gt_primary": primary == 1,
             }
 
-    print(f"  Scanned {total:,} geo_tags → {len(geo_pages):,} global pages")
+    primary_count = sum(1 for p in geo_pages.values() if p["gt_primary"])
+    print(f"  Scanned {total:,} geo_tags → {len(geo_pages):,} pages ({primary_count:,} primary, {len(geo_pages) - primary_count:,} non-primary)")
     return geo_pages
 
 
@@ -432,6 +445,7 @@ def main():
             "gt_type": info.get("gt_type", ""),
             "page_len": info.get("page_len", 0),
             "inlink_count": info.get("inlink_count", 0),
+            "gt_primary": info.get("gt_primary", True),
             "wikipedia_url": "https://en.wikipedia.org/wiki/" + title,
             "image_url": image_url,
         })
@@ -476,6 +490,7 @@ def main():
         "gt_type": pa.array([r["gt_type"] for r in rows], type=pa.string()),
         "page_len": pa.array([r["page_len"] for r in rows], type=pa.int32()),
         "inlink_count": pa.array([r["inlink_count"] for r in rows], type=pa.int32()),
+        "gt_primary": pa.array([r["gt_primary"] for r in rows], type=pa.bool_()),
         "wikipedia_url": pa.array([r["wikipedia_url"] for r in rows], type=pa.string()),
         "image_url": pa.array([r["image_url"] for r in rows], type=pa.string()),
     })
@@ -490,7 +505,7 @@ def main():
             SELECT
                 ST_Point(longitude, latitude) AS geometry,
                 page_id, qid, label, description, gt_type,
-                page_len, inlink_count, wikipedia_url, image_url
+                page_len, inlink_count, gt_primary, wikipedia_url, image_url
             FROM raw
             ORDER BY ST_Hilbert(ST_Point(longitude, latitude))
         ) TO '{OUTPUT_FILE}'

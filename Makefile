@@ -5,6 +5,7 @@ DUMP_DIR    := data/dumps
 DUMPS       := geo_tags page page_props linktarget pagelinks
 PARQUET     := data/wikipedia_geotagged.parquet
 PMTILES     := data/wikipedia_geotagged.pmtiles
+SEARCH      := data/wikipedia_search.parquet
 TIPPECANOE  ?= tippecanoe
 
 download:
@@ -33,6 +34,7 @@ tiles:
 					'gt_type', gt_type, \
 					'page_len', page_len, \
 					'inlink_count', inlink_count, \
+					'gt_primary', gt_primary, \
 					'wikipedia_url', wikipedia_url, \
 					'image_url', image_url \
 				) AS properties \
@@ -50,7 +52,17 @@ tiles:
 validate:
 	uv run python scripts/validate.py
 
-build: extract tiles validate
+search:
+	duckdb -c " \
+		LOAD spatial; \
+		COPY ( \
+			SELECT label, bbox.xmin AS lon, bbox.ymin AS lat \
+			FROM '$(PARQUET)' \
+			ORDER BY label \
+		) TO '$(SEARCH)' (FORMAT PARQUET, COMPRESSION ZSTD); \
+	"
+
+build: extract tiles search validate
 	@echo "Build complete."
 
 release:
@@ -71,6 +83,8 @@ upload:
 		--file $(PARQUET) --content-type application/vnd.apache.parquet --remote
 	wrangler r2 object put wiki-geoparquet/v1/wikipedia_geotagged.pmtiles \
 		--file $(PMTILES) --content-type application/vnd.pmtiles --remote
+	wrangler r2 object put wiki-geoparquet/v1/wikipedia_search.parquet \
+		--file $(SEARCH) --content-type application/vnd.apache.parquet --remote
 
 clean:
 	rm -f data/*.parquet data/*.pmtiles

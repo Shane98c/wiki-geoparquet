@@ -75,6 +75,9 @@ jobs:
           wrangler r2 object put wiki-geoparquet/v1/wikipedia_geotagged.pmtiles \
             --file data/wikipedia_geotagged.pmtiles \
             --content-type application/vnd.pmtiles --remote
+          wrangler r2 object put wiki-geoparquet/v1/wikipedia_search.parquet \
+            --file data/wikipedia_search.parquet \
+            --content-type application/vnd.apache.parquet --remote
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
