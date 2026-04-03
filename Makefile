@@ -1,4 +1,4 @@
-.PHONY: download extract tiles validate build release upload clean
+.PHONY: download extract tiles search validate build release upload clean
 
 DUMP_BASE   := https://dumps.wikimedia.org/enwiki/latest
 DUMP_DIR    := data/dumps
@@ -10,16 +10,24 @@ TIPPECANOE  ?= tippecanoe
 
 download:
 	mkdir -p $(DUMP_DIR)
-	@for f in $(DUMPS); do \
+	@pids=""; fail=0; \
+	for f in $(DUMPS); do \
 		echo "Downloading enwiki-latest-$$f.sql.gz..."; \
-		curl -L --retry 3 -C - -o $(DUMP_DIR)/enwiki-latest-$$f.sql.gz \
-			$(DUMP_BASE)/enwiki-latest-$$f.sql.gz; \
-	done
+		curl -fL --retry 3 -C - -o $(DUMP_DIR)/enwiki-latest-$$f.sql.gz \
+			$(DUMP_BASE)/enwiki-latest-$$f.sql.gz & \
+		pids="$$pids $$!"; \
+	done; \
+	for pid in $$pids; do \
+		wait $$pid || fail=1; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "ERROR: one or more downloads failed"; exit 1; fi
+	@echo "All downloads complete."
 
-extract:
+extract: $(PARQUET)
+$(PARQUET): scripts/extract.py
 	uv run python scripts/extract.py
 
-tiles:
+tiles: $(PARQUET)
 	duckdb -c " \
 		LOAD spatial; \
 		COPY ( \
@@ -49,10 +57,10 @@ tiles:
 		--extend-zooms-if-still-dropping \
 		-r1
 
-validate:
+validate: $(PARQUET)
 	uv run python scripts/validate.py
 
-search:
+search: $(PARQUET)
 	duckdb -c " \
 		LOAD spatial; \
 		COPY ( \
