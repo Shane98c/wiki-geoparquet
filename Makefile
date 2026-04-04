@@ -32,6 +32,7 @@ tiles: $(PARQUET)
 					'page_id', page_id, \
 					'label', label, \
 					'description', description, \
+					'elevation', elevation, \
 					'gt_type', gt_type, \
 					'page_len', page_len, \
 					'inlink_count', inlink_count, \

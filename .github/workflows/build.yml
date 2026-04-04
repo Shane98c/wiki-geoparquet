@@ -58,7 +58,7 @@ jobs:
 
       - name: Extract GeoParquet
         run: make extract
-        timeout-minutes: 150
+        timeout-minutes: 180
 
       - name: Build PMTiles
         run: make tiles TIPPECANOE=~/tippecanoe/tippecanoe
