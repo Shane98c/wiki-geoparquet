@@ -66,6 +66,17 @@ jobs:
       - name: Build search index and validate
         run: make -j2 search validate
 
+      - name: Check file sizes
+        run: |
+          for f in data/wikipedia_geotagged.parquet data/wikipedia_geotagged.pmtiles data/wikipedia_search.parquet; do
+            size=$(stat --format=%s "$f")
+            echo "$f: $((size / 1048576)) MiB"
+            if [ "$size" -gt 314572800 ]; then
+              echo "ERROR: $f exceeds 300 MiB wrangler upload limit"
+              exit 1
+            fi
+          done
+
       - name: Upload to R2
         run: |
           npm install -g wrangler
@@ -93,6 +104,7 @@ jobs:
           gh release upload "$TAG" \
             data/wikipedia_geotagged.parquet \
             data/wikipedia_geotagged.pmtiles \
+            data/wikipedia_search.parquet \
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
