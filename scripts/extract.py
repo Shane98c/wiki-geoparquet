@@ -27,6 +27,9 @@ DUMP_LOCAL_DIR = "data/dumps"
 OUTPUT_FILE = "data/wikipedia_geotagged.parquet"
 USER_AGENT = "wiki-geoparquet/1.0 (github.com/Shane98c/wiki-geoparquet)"
 
+ETOPO_URL = "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/60s/60s_surface_elev_gtif/ETOPO_2022_v1_60s_N90W180_surface.tif"
+ETOPO_LOCAL = "data/etopo/ETOPO_2022_v1_60s_N90W180_surface.tif"
+
 DUMP_FILES = {
     "geo_tags":   "enwiki-latest-geo_tags.sql.gz",
     "page":       "enwiki-latest-page.sql.gz",
@@ -388,6 +391,39 @@ def step5_pagelinks(geo_pages, lt_id_to_pid, test_mode):
     print(f"  Scanned {lines:,} INSERT lines, {hits:,} hits → {with_inlinks:,} pages have inlinks")
 
 
+# ── Elevation lookup ──────────────────────────────────────────
+
+def sample_elevations(rows):
+    """Sample elevation from ETOPO 2022 raster for each row's lat/lon."""
+    import rasterio
+
+    if not os.path.exists(ETOPO_LOCAL):
+        print(f"  Downloading ETOPO 2022 (~466 MB)...")
+        os.makedirs(os.path.dirname(ETOPO_LOCAL), exist_ok=True)
+        req = urllib.request.Request(ETOPO_URL, headers={"User-Agent": USER_AGENT})
+        resp = urllib.request.urlopen(req)
+        with open(ETOPO_LOCAL, 'wb') as f:
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+        print(f"  Downloaded to {ETOPO_LOCAL}")
+
+    print(f"  Sampling {len(rows):,} points from ETOPO 2022...")
+    coords = [(r["longitude"], r["latitude"]) for r in rows]
+    with rasterio.open(ETOPO_LOCAL) as src:
+        results = src.sample(coords)
+        sampled = 0
+        for i, val in enumerate(results):
+            elev = int(val[0])
+            rows[i]["elevation"] = elev
+            if elev != 0:
+                sampled += 1
+
+    print(f"  Elevation sampled for {len(rows):,} points ({sampled:,} non-zero)")
+
+
 # ── Main ──────────────────────────────────────────────────────
 
 def main():
@@ -450,6 +486,10 @@ def main():
             "image_url": image_url,
         })
 
+    # ── Sample elevation ──────────────────────────────────
+    print(f"\n→ Sampling elevation from ETOPO 2022...")
+    sample_elevations(rows)
+
     elapsed = time.time() - start
     print(f"\n{'=' * 60}")
     print(f"Complete in {elapsed / 60:.1f} minutes")
@@ -487,6 +527,7 @@ def main():
         "description": pa.array([r["description"] for r in rows], type=pa.string()),
         "latitude": pa.array([r["latitude"] for r in rows], type=pa.float64()),
         "longitude": pa.array([r["longitude"] for r in rows], type=pa.float64()),
+        "elevation": pa.array([r["elevation"] for r in rows], type=pa.int16()),
         "gt_type": pa.array([r["gt_type"] for r in rows], type=pa.string()),
         "page_len": pa.array([r["page_len"] for r in rows], type=pa.int32()),
         "inlink_count": pa.array([r["inlink_count"] for r in rows], type=pa.int32()),
@@ -504,7 +545,7 @@ def main():
         COPY (
             SELECT
                 ST_Point(longitude, latitude) AS geometry,
-                page_id, qid, label, description, gt_type,
+                page_id, qid, label, description, elevation, gt_type,
                 page_len, inlink_count, gt_primary, wikipedia_url, image_url
             FROM raw
             ORDER BY ST_Hilbert(ST_Point(longitude, latitude))

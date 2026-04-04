@@ -142,6 +142,34 @@ def main():
     print(f"    >= 50   (zoom 7-10):  {above_50:>8,}")
     print(f"    all     (zoom 11-14): {n:>8,}")
 
+    # Elevation checks
+    elev_stats = db.execute(f"""
+        SELECT
+            min(elevation), max(elevation), avg(elevation),
+            count(*) FILTER (WHERE elevation IS NOT NULL)
+        FROM '{PARQUET_FILE}'
+    """).fetchone()
+    elev_min, elev_max, elev_avg, elev_count = elev_stats
+    check("Elevation column populated",
+          elev_count == n,
+          f"only {elev_count:,} of {n:,} have elevation")
+    check("Elevation range plausible (min > -12000)",
+          elev_min is not None and elev_min > -12000,
+          f"min elevation is {elev_min}")
+    check("Elevation range plausible (max < 9000)",
+          elev_max is not None and elev_max < 9000,
+          f"max elevation is {elev_max}")
+    print(f"\n  Elevation: min {elev_min:,}m, max {elev_max:,}m, avg {elev_avg:,.0f}m")
+
+    # Spot-check known elevations (rough)
+    machu_elev = db.execute(f"""
+        SELECT elevation FROM '{PARQUET_FILE}' WHERE label = 'Machu Picchu'
+    """).fetchone()
+    if machu_elev:
+        check("Machu Picchu elevation ~2400m",
+              1800 < machu_elev[0] < 3000,
+              f"got {machu_elev[0]}m")
+
     # Page length distribution
     page_stats = db.execute(f"""
         SELECT avg(page_len), max(page_len) FROM '{PARQUET_FILE}'
