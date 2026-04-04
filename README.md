@@ -38,6 +38,11 @@ Pinned versions are also available on
 | `image_url`     | string    | Wikimedia Commons image URL                                   |
 | `bbox`          | struct    | Covering bbox for spatial predicate pushdown                  |
 
+The PMTiles carry a subset of these properties (no `geometry`, `qid`,
+`wikipedia_url`, `image_url`, or `bbox`). Reconstruct URLs client-side:
+- Article: `https://en.wikipedia.org/?curid={page_id}`
+- Image: `https://commons.wikimedia.org/wiki/Special:FilePath/{image}`
+
 ## Quick start
 
 ### Query with DuckDB

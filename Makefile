@@ -30,15 +30,13 @@ tiles: $(PARQUET)
 				ST_AsGeoJSON(geometry)::JSON AS geometry, \
 				json_object( \
 					'page_id', page_id, \
-					'qid', qid, \
 					'label', label, \
 					'description', description, \
 					'gt_type', gt_type, \
 					'page_len', page_len, \
 					'inlink_count', inlink_count, \
 					'gt_primary', gt_primary, \
-					'wikipedia_url', wikipedia_url, \
-					'image_url', image_url \
+					'image', regexp_extract(image_url, '[^/]+$') \
 				) AS properties \
 			FROM '$(PARQUET)' \
 		) TO STDOUT (FORMAT json, ARRAY false); \
