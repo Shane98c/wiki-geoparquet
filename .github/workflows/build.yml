@@ -60,8 +60,11 @@ jobs:
         run: make extract
         timeout-minutes: 150
 
-      - name: Build tiles, search index, and validate
-        run: make -j3 tiles search validate TIPPECANOE=~/tippecanoe/tippecanoe
+      - name: Build PMTiles
+        run: make tiles TIPPECANOE=~/tippecanoe/tippecanoe
+
+      - name: Build search index and validate
+        run: make -j2 search validate
 
       - name: Upload to R2
         run: |
