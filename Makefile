@@ -36,7 +36,7 @@ tiles: $(PARQUET)
 					'page_len', page_len, \
 					'inlink_count', inlink_count, \
 					'gt_primary', gt_primary, \
-					'image', regexp_extract(image_url, '[^/]+$') \
+					'image', regexp_extract(image_url, '[^/]+$$') \
 				) AS properties \
 			FROM '$(PARQUET)' \
 		) TO STDOUT (FORMAT json, ARRAY false); \
