@@ -7,9 +7,9 @@ PARQUET     := data/wikipedia_geotagged.parquet
 PMTILES     := data/wikipedia_geotagged.pmtiles
 SEARCH      := data/wikipedia_search.parquet
 TIPPECANOE  ?= tippecanoe
-ETOPO_URL   := https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/60s/60s_surface_elev_gtif/ETOPO_2022_v1_60s_N90W180_surface.tif
+ETOPO_URL   := https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/30s/30s_surface_elev_gtif/ETOPO_2022_v1_30s_N90W180_surface.tif
 ETOPO_DIR   := data/etopo
-ETOPO_FILE  := $(ETOPO_DIR)/ETOPO_2022_v1_60s_N90W180_surface.tif
+ETOPO_FILE  := $(ETOPO_DIR)/ETOPO_2022_v1_30s_N90W180_surface.tif
 
 download:
 	mkdir -p $(DUMP_DIR)

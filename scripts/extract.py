@@ -27,8 +27,8 @@ DUMP_LOCAL_DIR = "data/dumps"
 OUTPUT_FILE = "data/wikipedia_geotagged.parquet"
 USER_AGENT = "wiki-geoparquet/1.0 (github.com/Shane98c/wiki-geoparquet)"
 
-ETOPO_URL = "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/60s/60s_surface_elev_gtif/ETOPO_2022_v1_60s_N90W180_surface.tif"
-ETOPO_LOCAL = "data/etopo/ETOPO_2022_v1_60s_N90W180_surface.tif"
+ETOPO_URL = "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/30s/30s_surface_elev_gtif/ETOPO_2022_v1_30s_N90W180_surface.tif"
+ETOPO_LOCAL = "data/etopo/ETOPO_2022_v1_30s_N90W180_surface.tif"
 
 DUMP_FILES = {
     "geo_tags":   "enwiki-latest-geo_tags.sql.gz",
@@ -398,7 +398,7 @@ def sample_elevations(rows):
     import rasterio
 
     if not os.path.exists(ETOPO_LOCAL):
-        print(f"  Downloading ETOPO 2022 (~466 MB)...")
+        print(f"  Downloading ETOPO 2022 (~1.5 GB)...")
         os.makedirs(os.path.dirname(ETOPO_LOCAL), exist_ok=True)
         req = urllib.request.Request(ETOPO_URL, headers={"User-Agent": USER_AGENT})
         resp = urllib.request.urlopen(req)
