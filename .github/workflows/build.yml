@@ -52,13 +52,13 @@ jobs:
           mkdir -p ~/tippecanoe
           cp tippecanoe ~/tippecanoe/
 
-      - name: Download Wikipedia dumps and ETOPO elevation
-        run: make download download-etopo -j2
+      - name: Download Wikipedia dumps
+        run: make download
         timeout-minutes: 120
 
       - name: Extract GeoParquet
         run: make extract
-        timeout-minutes: 150
+        timeout-minutes: 180
 
       - name: Build PMTiles
         run: make tiles TIPPECANOE=~/tippecanoe/tippecanoe

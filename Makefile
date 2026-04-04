@@ -1,4 +1,4 @@
-.PHONY: download download-etopo extract tiles search validate build release upload clean
+.PHONY: download extract tiles search validate build release upload clean
 
 DUMP_BASE   := https://dumps.wikimedia.org/enwiki/latest
 DUMP_DIR    := data/dumps
@@ -7,9 +7,6 @@ PARQUET     := data/wikipedia_geotagged.parquet
 PMTILES     := data/wikipedia_geotagged.pmtiles
 SEARCH      := data/wikipedia_search.parquet
 TIPPECANOE  ?= tippecanoe
-ETOPO_URL   := https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/30s/30s_surface_elev_gtif/ETOPO_2022_v1_30s_N90W180_surface.tif
-ETOPO_DIR   := data/etopo
-ETOPO_FILE  := $(ETOPO_DIR)/ETOPO_2022_v1_30s_N90W180_surface.tif
 
 download:
 	mkdir -p $(DUMP_DIR)
@@ -20,13 +17,8 @@ download:
 	done
 	@echo "All downloads complete."
 
-download-etopo: $(ETOPO_FILE)
-$(ETOPO_FILE):
-	mkdir -p $(ETOPO_DIR)
-	curl -f#L --retry 5 --retry-delay 10 -C - -o $(ETOPO_FILE) $(ETOPO_URL)
-
 extract: $(PARQUET)
-$(PARQUET): scripts/extract.py $(ETOPO_FILE)
+$(PARQUET): scripts/extract.py
 	uv run python scripts/extract.py
 
 tiles: $(PARQUET)
@@ -98,4 +90,3 @@ upload:
 
 clean:
 	rm -f data/*.parquet data/*.pmtiles
-	rm -rf data/etopo

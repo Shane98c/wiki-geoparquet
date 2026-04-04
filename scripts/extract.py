@@ -27,8 +27,7 @@ DUMP_LOCAL_DIR = "data/dumps"
 OUTPUT_FILE = "data/wikipedia_geotagged.parquet"
 USER_AGENT = "wiki-geoparquet/1.0 (github.com/Shane98c/wiki-geoparquet)"
 
-ETOPO_URL = "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/30s/30s_surface_elev_gtif/ETOPO_2022_v1_30s_N90W180_surface.tif"
-ETOPO_LOCAL = "data/etopo/ETOPO_2022_v1_30s_N90W180_surface.tif"
+COP_DEM_BASE = "https://copernicus-dem-30m.s3.amazonaws.com"
 
 DUMP_FILES = {
     "geo_tags":   "enwiki-latest-geo_tags.sql.gz",
@@ -393,35 +392,75 @@ def step5_pagelinks(geo_pages, lt_id_to_pid, test_mode):
 
 # ── Elevation lookup ──────────────────────────────────────────
 
+def _cop_dem_tile_key(lat, lon):
+    """Return the Copernicus DEM 30m tile key for a lat/lon coordinate.
+
+    Tiles are 1°×1°. The tile key encodes the SW corner.
+    """
+    import math
+    tile_lat = math.floor(lat)
+    tile_lon = math.floor(lon)
+
+    ns = "N" if tile_lat >= 0 else "S"
+    ew = "E" if tile_lon >= 0 else "W"
+    lat_str = f"{ns}{abs(tile_lat):02d}_00"
+    lon_str = f"{ew}{abs(tile_lon):03d}_00"
+    return (tile_lat, tile_lon), f"Copernicus_DSM_COG_10_{lat_str}_{lon_str}_DEM"
+
+
 def sample_elevations(rows):
-    """Sample elevation from ETOPO 2022 raster for each row's lat/lon."""
+    """Sample elevation from Copernicus DEM 30m COGs on S3 (no download)."""
     import rasterio
+    from collections import defaultdict
 
-    if not os.path.exists(ETOPO_LOCAL):
-        print(f"  Downloading ETOPO 2022 (~1.5 GB)...")
-        os.makedirs(os.path.dirname(ETOPO_LOCAL), exist_ok=True)
-        req = urllib.request.Request(ETOPO_URL, headers={"User-Agent": USER_AGENT})
-        resp = urllib.request.urlopen(req)
-        with open(ETOPO_LOCAL, 'wb') as f:
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-        print(f"  Downloaded to {ETOPO_LOCAL}")
+    # Group row indices by tile
+    tile_groups = defaultdict(list)
+    for i, r in enumerate(rows):
+        key, tile_name = _cop_dem_tile_key(r["latitude"], r["longitude"])
+        tile_groups[(key, tile_name)].append(i)
 
-    print(f"  Sampling {len(rows):,} points from ETOPO 2022...")
-    coords = [(r["longitude"], r["latitude"]) for r in rows]
-    with rasterio.open(ETOPO_LOCAL) as src:
-        results = src.sample(coords)
-        sampled = 0
-        for i, val in enumerate(results):
-            elev = int(val[0])
-            rows[i]["elevation"] = elev
-            if elev != 0:
-                sampled += 1
+    print(f"  {len(rows):,} points across {len(tile_groups):,} tiles")
 
-    print(f"  Elevation sampled for {len(rows):,} points ({sampled:,} non-zero)")
+    # Configure GDAL for efficient COG access
+    gdal_env = rasterio.Env(
+        GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
+        GDAL_HTTP_MULTIPLEX="YES",
+        GDAL_HTTP_MAX_RETRY="3",
+        GDAL_HTTP_RETRY_DELAY="2",
+        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+        CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
+    )
+
+    sampled = 0
+    failed_tiles = 0
+    done_tiles = 0
+
+    with gdal_env:
+        for (key, tile_name), indices in tile_groups.items():
+            url = f"{COP_DEM_BASE}/{tile_name}/{tile_name}.tif"
+            try:
+                with rasterio.open(url) as src:
+                    coords = [
+                        (rows[i]["longitude"], rows[i]["latitude"])
+                        for i in indices
+                    ]
+                    for j, val in enumerate(src.sample(coords)):
+                        elev = int(val[0])
+                        rows[indices[j]]["elevation"] = elev
+                        sampled += 1
+            except Exception:
+                # Ocean tiles or tiles that don't exist — set to 0
+                for i in indices:
+                    rows[i]["elevation"] = 0
+                failed_tiles += 1
+
+            done_tiles += 1
+            if done_tiles % 500 == 0:
+                print(f"  ...{done_tiles:,}/{len(tile_groups):,} tiles, "
+                      f"{sampled:,} points sampled")
+
+    print(f"  Sampled {sampled:,} points from {done_tiles - failed_tiles:,} tiles "
+          f"({failed_tiles:,} missing/ocean tiles → elevation 0)")
 
 
 # ── Main ──────────────────────────────────────────────────────
@@ -487,7 +526,7 @@ def main():
         })
 
     # ── Sample elevation ──────────────────────────────────
-    print(f"\n→ Sampling elevation from ETOPO 2022...")
+    print(f"\n→ Sampling elevation from Copernicus DEM 30m...")
     sample_elevations(rows)
 
     elapsed = time.time() - start
