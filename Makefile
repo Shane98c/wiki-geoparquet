@@ -76,6 +76,7 @@ release:
 	gh release upload $$TAG \
 		$(PARQUET) \
 		$(PMTILES) \
+		$(SEARCH) \
 		--clobber
 
 upload:
