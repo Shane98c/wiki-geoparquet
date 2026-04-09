@@ -571,8 +571,8 @@ def main():
     print(f"  Avg page_len: {avg_len:,.0f} bytes")
     print(f"  Avg inlinks:  {avg_inlinks:,.0f}")
 
-    # ── DuckDB: add geometry, Hilbert-sort, write GeoParquet ──
-    print(f"\n→ Writing GeoParquet (Hilbert-sorted)...")
+    # ── DuckDB: write GeoParquet with geometry column ──
+    print(f"\n→ Writing GeoParquet...")
     import duckdb
     db = duckdb.connect()
     db.execute("INSTALL spatial; LOAD spatial;")
@@ -598,8 +598,6 @@ def main():
 
     db.register("raw", table)
 
-    row_group_size = min(75_000, max(5_000, len(geo_pages) // 10))
-
     db.execute(f"""
         COPY (
             SELECT
@@ -607,22 +605,17 @@ def main():
                 page_id, qid, label, description, elevation, gt_type,
                 page_len, inlink_count, gt_primary, wikipedia_url, image_url
             FROM raw
-            ORDER BY ST_Hilbert(ST_Point(longitude, latitude))
         ) TO '{OUTPUT_FILE}'
-        WITH (
-            FORMAT PARQUET,
-            COMPRESSION ZSTD,
-            ROW_GROUP_SIZE {row_group_size}
-        )
+        WITH (FORMAT PARQUET, COMPRESSION ZSTD)
     """)
-
     db.close()
 
-    # Add bbox covering metadata for spatial predicate pushdown
-    print(f"\n→ Adding bbox covering metadata...")
+    # Hilbert-sort + add bbox covering in one pass
+    print(f"\n→ Hilbert-sorting with bbox covering...")
     import subprocess
     subprocess.run(
-        ["uv", "run", "gpio", "add", "bbox", OUTPUT_FILE, OUTPUT_FILE],
+        ["uv", "run", "gpio", "sort", "hilbert", "--add-bbox",
+         OUTPUT_FILE, OUTPUT_FILE],
         check=True,
     )
 
