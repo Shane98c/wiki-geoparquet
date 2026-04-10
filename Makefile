@@ -57,7 +57,11 @@ search: $(PARQUET)
 	duckdb -c " \
 		LOAD spatial; \
 		COPY ( \
-			SELECT label, bbox.xmin AS lon, bbox.ymin AS lat \
+			SELECT \
+				label, \
+				bbox.xmin AS lon, \
+				bbox.ymin AS lat, \
+				(page_len / 1024)::SMALLINT AS page_len_kb \
 			FROM '$(PARQUET)' \
 			ORDER BY label \
 		) TO '$(SEARCH)' (FORMAT PARQUET, COMPRESSION ZSTD); \
