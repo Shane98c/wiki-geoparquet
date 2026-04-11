@@ -455,8 +455,17 @@ def sample_elevations(rows):
         results = {}
         try:
             with rasterio.open(url) as src:
+                # Nudge integer-boundary coords ~100 m into the tile.
+                # Wikipedia often tags countries/regions with exact integer
+                # lat/lon (e.g. Mexico at 23°N, 102°W), and Copernicus DEM
+                # tiles are 1°×1° at integer boundaries — sampling the exact
+                # SW corner lands on the pixel grid edge and rasterio returns
+                # nodata/0. Shifting 0.001° inward keeps us in the same tile
+                # (math.floor picks the same one) but lands on a real pixel.
+                def _nudge(v):
+                    return v + 0.001 if v == int(v) else v
                 coords = [
-                    (rows[i]["longitude"], rows[i]["latitude"])
+                    (_nudge(rows[i]["longitude"]), _nudge(rows[i]["latitude"]))
                     for i in indices
                 ]
                 for j, val in enumerate(src.sample(coords)):
