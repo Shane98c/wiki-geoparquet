@@ -64,12 +64,10 @@ ORDER BY inlink_count DESC;
 
 ### Browser search with duckdb-wasm
 
-The `wikipedia_search.parquet` index has columns `label` (lowercased, used for
-both sorting and lookup), `lon`, `lat`, and `inlink_count` (notability proxy
-for ranking — see "How it works" for why inlinks beats page length as a
-notability signal). It's sorted by `label` so a lowercased prefix range lets
-DuckDB skip row groups and fetch ~2 MB per query instead of the full ~25 MB
-file.
+The `wikipedia_search.parquet` index has columns `label` (lowercased, used
+for both sorting and lookup), `lon`, `lat`, and `inlink_count` for ranking.
+It's sorted by `label` so a lowercased prefix range lets DuckDB skip row
+groups and fetch ~2 MB per query instead of the full ~25 MB file.
 
 ```js
 // In duckdb-wasm, INSTALL httpfs (or SET builtin_httpfs = false) — without
