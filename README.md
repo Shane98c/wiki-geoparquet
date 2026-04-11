@@ -131,7 +131,11 @@ const map = new maplibregl.Map({
 
 1. Streams 5 Wikipedia SQL dump files (~12 GB) and extracts geotagged pages with
    Earth coordinates (preferring primary, falling back to non-primary),
-   filtering to main-namespace non-redirect articles
+   filtering to main-namespace non-redirect articles. Drops catalog articles
+   (`List of …`, `Listed buildings …`, `Timeline of …`) when their coord is
+   non-primary — that's how we distinguish "Timeline of Pittsburgh" (a city
+   history, kept) from "Timeline of the Syrian civil war" (an event at an
+   incidental location, dropped)
 2. Joins with page metadata, Wikidata properties, and pagelinks-based inlink
    counts
 3. Writes Hilbert-sorted GeoParquet with bbox covering via DuckDB spatial

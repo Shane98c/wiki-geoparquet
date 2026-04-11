@@ -250,6 +250,20 @@ def step2_page(geo_pages, test_mode):
         title = t[2]
         page_len = t[9]
 
+        # Drop catalog/list articles *only when their coord is non-primary*.
+        # The gt_primary flag neatly separates "Timeline of Pittsburgh"
+        # (primary, about the city) from "Timeline of the Syrian civil war"
+        # (non-primary, an event pinned to some incidental location). Same
+        # for "List of counties in Colorado" (primary, about Colorado) vs
+        # "List of shipwrecks in 1906" (non-primary event catalog).
+        # Titles here still have underscores (Wikipedia's internal format).
+        if (not geo_pages[page_id]["gt_primary"] and (
+                title.startswith("List_of_")
+                or title.startswith("Listed_buildings_")
+                or title.startswith("Timeline_of_"))):
+            del geo_pages[page_id]
+            continue
+
         geo_pages[page_id]["title"] = title
         geo_pages[page_id]["page_len"] = int(page_len) if page_len else 0
         matched += 1
