@@ -16,7 +16,7 @@ Parquet-aware tool:
 | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | [`wikipedia_geotagged.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet) | GeoParquet, Hilbert-sorted with bbox covering                   |
 | [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles) | Vector tiles, auto-zoom with overzoom, drops by article length  |
-| [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet)       | Lightweight search index (label, coords, inlink count), sorted by label |
+| [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet)       | Lightweight search index (lowercased label, coords, inlink count), sorted by label for prefix-range row-group pruning |
 
 Pinned versions are also available on
 [GitHub Releases](https://github.com/Shane98c/wiki-geoparquet/releases/latest).
@@ -60,6 +60,31 @@ LIMIT 20;
 SELECT label, inlink_count, gt_type
 FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet'
 ORDER BY inlink_count DESC;
+```
+
+### Browser search with duckdb-wasm
+
+The `wikipedia_search.parquet` index has columns `label` (lowercased, used for
+both sorting and lookup), `lon`, `lat`, and `inlink_count` (notability proxy
+for ranking — see "How it works" for why inlinks beats page length as a
+notability signal). It's sorted by `label` so a lowercased prefix range lets
+DuckDB skip row groups and fetch ~2 MB per query instead of the full ~25 MB
+file.
+
+```js
+// In duckdb-wasm, INSTALL httpfs (or SET builtin_httpfs = false) — without
+// this the built-in HTTP handler downloads the whole file on every query.
+// See https://github.com/duckdb/duckdb-wasm/issues/2153.
+await conn.query("SET builtin_httpfs = false;");
+
+const q = userInput.toLowerCase().replace(/'/g, "''");
+await conn.query(`
+  SELECT label, lon, lat
+  FROM 'https://.../wikipedia_search.parquet'
+  WHERE label >= '${q}' AND label < '${q}~'
+  ORDER BY inlink_count DESC
+  LIMIT 10
+`);
 ```
 
 ### Use pmtiles in MapLibre

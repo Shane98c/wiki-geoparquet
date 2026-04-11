@@ -58,7 +58,7 @@ search: $(PARQUET)
 		LOAD spatial; \
 		COPY ( \
 			SELECT \
-				label, \
+				lower(label) AS label, \
 				bbox.xmin AS lon, \
 				bbox.ymin AS lat, \
 				inlink_count \
