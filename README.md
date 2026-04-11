@@ -16,7 +16,7 @@ Parquet-aware tool:
 | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | [`wikipedia_geotagged.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet) | GeoParquet, Hilbert-sorted with bbox covering                   |
 | [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles) | Vector tiles, auto-zoom with overzoom, drops by article length  |
-| [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet)       | Lightweight search index (label + coordinates, sorted by label) |
+| [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet)       | Lightweight search index (label, coords, inlink count), sorted by label |
 
 Pinned versions are also available on
 [GitHub Releases](https://github.com/Shane98c/wiki-geoparquet/releases/latest).

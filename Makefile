@@ -46,7 +46,7 @@ tiles: $(PARQUET)
 		--name="Wikipedia Geotagged Articles" \
 		--attribution="Wikipedia/Wikidata, CC BY-SA 4.0" \
 		--minimum-zoom=0 -zg \
-		--drop-by-attribute-as-needed=page_len \
+		--drop-by-attribute-as-needed=inlink_count \
 		--extend-zooms-if-still-dropping \
 		-r1
 
@@ -61,7 +61,7 @@ search: $(PARQUET)
 				label, \
 				bbox.xmin AS lon, \
 				bbox.ymin AS lat, \
-				(page_len / 1024)::SMALLINT AS page_len_kb \
+				inlink_count \
 			FROM '$(PARQUET)' \
 			ORDER BY label \
 		) TO '$(SEARCH)' (FORMAT PARQUET, COMPRESSION ZSTD); \
