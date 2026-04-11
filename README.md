@@ -101,6 +101,9 @@ const map = new maplibregl.Map({
       wikipedia: {
         type: "vector",
         url: "pmtiles://https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles",
+        // Required for setFeatureState() hover highlights — tippecanoe
+        // doesn't emit MVT feature IDs, so we promote page_id into that slot.
+        promoteId: "page_id",
       },
     },
     layers: [
@@ -110,16 +113,35 @@ const map = new maplibregl.Map({
         "source-layer": "wikipedia",
         type: "circle",
         paint: {
+          // sqrt(inlink_count) ranges ~0 (unlinked) to ~280 (Paris ≈ 78k inlinks).
+          // The wide radius range gives strong visual contrast between niche
+          // and landmark articles.
           "circle-radius": [
             "interpolate",
             ["linear"],
             ["sqrt", ["get", "inlink_count"]],
-            0,
-            1.5,
-            100,
-            10,
+            0, 2.5,
+            280, 20,
           ],
-          "circle-color": "#4264fb",
+          "circle-color": [
+            "case",
+            ["boolean", ["feature-state", "hover"], false],
+            "#ffffff",
+            "#4264fb",
+          ],
+          "circle-opacity": [
+            "case",
+            ["boolean", ["feature-state", "hover"], false],
+            1,
+            0.7,
+          ],
+          "circle-stroke-width": [
+            "case",
+            ["boolean", ["feature-state", "hover"], false],
+            1.5,
+            0,
+          ],
+          "circle-stroke-color": "#4264fb",
         },
       },
     ],

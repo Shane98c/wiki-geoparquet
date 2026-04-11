@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>wiki-geoparquet demo</title>
+  <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/pmtiles@3/dist/pmtiles.js"></script>
+  <style>
+    body {
+      margin: 0;
+      background: #0a0a1a
+    }
+
+    #map {
+      width: 100vw;
+      height: 100vh
+    }
+
+    .maplibregl-popup-content {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border-radius: 8px;
+      padding: 10px;
+      width: 250px;
+      box-shadow: 0 2px 10px rgba(140, 160, 220, 0.1);
+    }
+
+    .maplibregl-popup-anchor-bottom .maplibregl-popup-tip {
+      border-top-color: #1a1a2e !important;
+    }
+
+    .maplibregl-popup-anchor-top .maplibregl-popup-tip {
+      border-bottom-color: #1a1a2e !important;
+    }
+
+    .maplibregl-popup-anchor-left .maplibregl-popup-tip {
+      border-right-color: #1a1a2e !important;
+    }
+
+    .maplibregl-popup-anchor-right .maplibregl-popup-tip {
+      border-left-color: #1a1a2e !important;
+    }
+
+    .maplibregl-popup-close-button {
+      color: #8a8aa0;
+      font-size: 14px;
+      padding: 2px 6px;
+      top: -8px;
+      right: -8px;
+      background: #1a1a2e;
+      border-radius: 50%;
+      line-height: 1;
+    }
+
+    .maplibregl-popup-close-button:hover {
+      background: #1a1a2e;
+    }
+
+    #q::placeholder {
+      color: #e0e0e0;
+      opacity: 1;
+      transition: color 0.15s;
+    }
+
+    #q:focus::placeholder {
+      color: #555;
+    }
+
+    .search-result {
+      padding: 6px 12px;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      cursor: pointer;
+      font-size: 13px;
+      border-bottom: 1px solid #252540;
+    }
+
+    .search-result:hover,
+    .search-result.selected {
+      background: #252540;
+    }
+
+    .hover-popup .maplibregl-popup-content {
+      background: rgba(26, 26, 46, 0.95);
+      color: #e0e0e0;
+      padding: 3px 7px;
+      font-size: 11px;
+      width: auto;
+      max-width: 220px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+      pointer-events: none;
+    }
+
+    .hover-popup .maplibregl-popup-tip {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="search" style="position:absolute;top:12px;left:12px;z-index:1">
+    <input id="q" type="text" placeholder="Search articles by name"
+      style="width:240px;padding:8px 12px;border:1px solid #252540;border-radius:6px;background:#1a1a2e;color:#e0e0e0;font-size:14px;outline:none"
+      onfocus="this.style.borderColor='#4264fb'" onblur="this.style.borderColor='#252540'">
+    <div id="results" style="margin-top:4px;border-radius:6px;overflow:hidden"></div>
+  </div>
+  <div id="about"
+    style="position:absolute;bottom:12px;left:12px;z-index:1;max-width:320px;padding:10px 14px;background:#1a1a2e;color:#c0c0d0;border:1px solid #252540;border-radius:6px;font-size:12px;font-family:system-ui,sans-serif;line-height:1.5">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
+      <div style="color:#7aadff;font-size:15px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">
+        wiki-geoparquet</div>
+      <a href="https://github.com/Shane98c/wiki-geoparquet" target="_blank" rel="noopener" title="View source on GitHub"
+        style="display:flex;align-items:center;gap:5px;padding:3px 8px;background:#12122a;color:#c0c0d0;border:1px solid #252540;border-radius:5px;text-decoration:none;font-size:11px;flex-shrink:0"
+        onmouseenter="this.style.borderColor='#4264fb';this.style.color='#e0e0e0'"
+        onmouseleave="this.style.borderColor='#252540';this.style.color='#c0c0d0'">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path
+            d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58 0-.28-.01-1.04-.02-2.04-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.21.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23.96-.27 1.98-.4 3-.4 1.02 0 2.04.13 3 .4 2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.6-2.8 5.62-5.48 5.92.43.37.81 1.1.81 2.22 0 1.61-.01 2.9-.01 3.29 0 .32.22.7.83.58C20.57 21.79 24 17.3 24 12c0-6.63-5.37-12-12-12z" />
+        </svg>
+        source and data
+      </a>
+    </div>
+    <div style="color:#e0e0e0;font-weight:600;margin-bottom:4px">Geotagged English Wikipedia articles</div>
+    Updated monthly. Rendered with <a href="https://docs.protomaps.com/pmtiles/" target="_blank" rel="noopener"
+      style="color:#7aadff">PMTiles</a>,
+    circles sized by inlink count. Search runs in the browser via <a href="https://duckdb.org/docs/api/wasm/overview"
+      target="_blank" rel="noopener" style="color:#7aadff">DuckDB-WASM</a>
+    reading the remote <a href="https://geoparquet.org/" target="_blank" rel="noopener"
+      style="color:#7aadff">GeoParquet</a>
+    index over HTTP range requests. No server!
+  </div>
+  <div id="map"></div>
+  <script type="module">
+    import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm/+esm";
+
+    let protocol = new pmtiles.Protocol();
+    maplibregl.addProtocol("pmtiles", protocol.tile);
+
+    // Load the Protomaps dark style and override its palette / hide noisy
+    // labels before handing the composed style to MapLibre.
+    const styleResp = await fetch(
+      "https://api.protomaps.com/styles/v5/dark/en.json?key=8666959e4f2a04aa"
+    );
+    const style = await styleResp.json();
+    style.projection = { type: "globe" };
+    const LAND_COLOR = "#151528";
+    const LAND_RE = /^(earth|land)(_|$)|landcover|landuse|park|forest|wood|grass|natural|pedestrian|plaza/i;
+    const HIDE_LABELS_RE = /park|landcover|landuse|natural|forest|wood|poi|pedestrian|plaza/i;
+    for (const layer of style.layers) {
+      if (layer.type === "background") {
+        layer.paint = { ...(layer.paint || {}), "background-color": "#0a0a1a" };
+      } else if (layer.type === "fill" && /water|ocean/i.test(layer.id)) {
+        layer.paint = { ...(layer.paint || {}), "fill-color": "#0a0a1a" };
+      } else if (layer.type === "fill" && LAND_RE.test(layer.id)) {
+        layer.paint = { ...(layer.paint || {}), "fill-color": LAND_COLOR };
+      } else if (layer.type === "symbol" && HIDE_LABELS_RE.test(layer.id)) {
+        layer.layout = { ...(layer.layout || {}), visibility: "none" };
+      }
+    }
+    style.sky = {
+      "sky-color": "#0a0a1a",
+      "horizon-color": "#0e0e24",
+      "fog-color": "#0a0a1a",
+      "sky-horizon-blend": 0.1,
+      "horizon-fog-blend": 0.2,
+      "fog-ground-blend": 0.7,
+      "atmosphere-blend": 0.15,
+    };
+    style.sources.wikipedia = {
+      type: "vector",
+      url: "pmtiles://https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles",
+      // Tippecanoe doesn't emit MVT feature IDs, so promote page_id into
+      // that slot so setFeatureState() can hover-highlight features.
+      promoteId: "page_id",
+    };
+    // Insert below the first symbol layer so labels render on top.
+    const articlesLayer = {
+      id: "articles",
+      source: "wikipedia",
+      "source-layer": "wikipedia",
+      type: "circle",
+      paint: {
+        // sqrt(inlink_count) ranges 0 (unlinked) to ~280 (Paris ≈ 78k).
+        "circle-radius": ["interpolate", ["linear"], ["sqrt", ["get", "inlink_count"]], 0, 2.5, 280, 20],
+        "circle-color": ["case", ["boolean", ["feature-state", "hover"], false], "#ffffff", "#4264fb"],
+        "circle-opacity": ["case", ["boolean", ["feature-state", "hover"], false], 1, 0.6],
+        "circle-stroke-color": "#4264fb",
+      },
+    };
+    const firstSymbolIdx = style.layers.findIndex((l) => l.type === "symbol");
+    if (firstSymbolIdx >= 0) {
+      style.layers.splice(firstSymbolIdx, 0, articlesLayer);
+    } else {
+      style.layers.push(articlesLayer);
+    }
+
+    const map = new maplibregl.Map({
+      container: "map",
+      style,
+      center: [-30, 45],
+      zoom: 2.5,
+    });
+
+    // URLs are reconstructed client-side to keep pmtiles small.
+    const wikipediaUrl = (label) =>
+      "https://en.wikipedia.org/wiki/" + encodeURIComponent(label.replace(/ /g, "_"));
+    const imageUrl = (image) =>
+      image ? "https://commons.wikimedia.org/wiki/Special:FilePath/" + encodeURIComponent(image) : "";
+
+    // Title-case lowercased search labels for display. Imperfect for
+    // sentence-case articles ("List of animals") but correct for the place
+    // names and landmarks that dominate the dataset.
+    const SMALL_WORDS = new Set([
+      "a", "an", "the", "and", "or", "but", "nor", "for", "of", "to", "in",
+      "on", "at", "by", "from", "with", "de", "la", "le", "du", "van", "von",
+    ]);
+    function titleCase(s) {
+      return s.split(" ").map((w, i) => {
+        if (!w) return w;
+        if (i > 0 && SMALL_WORDS.has(w)) return w;
+        return w[0].toUpperCase() + w.slice(1);
+      }).join(" ");
+    }
+
+    function popupHtml(f) {
+      const img = imageUrl(f.image);
+      return `
+        ${img ? `<div style="width:100%;height:150px;border-radius:4px;margin-bottom:6px;background:#12122a;overflow:hidden"><img src="${img}" style="width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.3s" onload="this.style.opacity=1" onerror="this.parentElement.style.display='none'"></div>` : ""}
+        <strong><a href="${wikipediaUrl(f.label)}" target="_blank" style="color:#7aadff">${f.label}</a></strong>
+        <div style="color:#a0a0b0;font-size:12px;margin:4px 0">${f.description || ""}</div>
+        <div style="color:#8a8aa0;font-size:11px">
+          ${f.gt_type ? `${f.gt_type} · ` : ""}${(f.page_len / 1024).toFixed(1)} KB · ${f.inlink_count.toLocaleString()} inlinks${f.elevation ? ` · elev ${f.elevation.toLocaleString()} m` : ""}
+        </div>
+      `;
+    }
+
+    // Globe mode reports false hits for pixels outside the visible sphere
+    // (maplibre-gl-js#7103). project(unproject(pt)) only round-trips to
+    // the original pixel when it's actually on the globe; in mercator this
+    // is a no-op. Used to gate click/hover handlers.
+    function isOverGlobe(pt) {
+      const ll = map.unproject(pt);
+      if (!ll) return false;
+      const back = map.project(ll);
+      return Math.abs(back.x - pt.x) < 2 && Math.abs(back.y - pt.y) < 2;
+    }
+
+    map.on("click", "articles", (e) => {
+      if (!isOverGlobe(e.point)) return;
+      new maplibregl.Popup()
+        .setLngLat(e.lngLat)
+        .setHTML(popupHtml(e.features[0].properties))
+        .addTo(map);
+    });
+
+    // Hover label + highlight ring.
+    const hoverPopup = new maplibregl.Popup({
+      closeButton: false,
+      closeOnClick: false,
+      className: "hover-popup",
+      offset: 10,
+    });
+    let hoveredId = null;
+    function clearHover() {
+      if (hoveredId !== null) {
+        map.setFeatureState(
+          { source: "wikipedia", sourceLayer: "wikipedia", id: hoveredId },
+          { hover: false },
+        );
+        hoveredId = null;
+      }
+      hoverPopup.remove();
+      map.getCanvas().style.cursor = "";
+    }
+
+    map.on("mousemove", "articles", (e) => {
+      if (!isOverGlobe(e.point)) { clearHover(); return; }
+      map.getCanvas().style.cursor = "pointer";
+      const f = e.features[0];
+      if (hoveredId !== null && hoveredId !== f.id) {
+        map.setFeatureState(
+          { source: "wikipedia", sourceLayer: "wikipedia", id: hoveredId },
+          { hover: false },
+        );
+      }
+      hoveredId = f.id;
+      map.setFeatureState(
+        { source: "wikipedia", sourceLayer: "wikipedia", id: hoveredId },
+        { hover: true },
+      );
+      hoverPopup.setLngLat(e.lngLat).setText(f.properties.label).addTo(map);
+    });
+    map.on("mouseleave", "articles", clearHover);
+
+    // DuckDB-WASM is ~7 MB gzipped — defer until the search box is focused
+    // so the map loads instantly for visitors who never search.
+    const SEARCH_URL = "https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet";
+    let selectedIdx = -1;
+    let dbPromise = null;
+    function getDb() {
+      if (dbPromise) return dbPromise;
+      dbPromise = (async () => {
+        const BUNDLES = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm/dist/";
+        const bundle = await duckdb.selectBundle({
+          mvp: { mainModule: BUNDLES + "duckdb-mvp.wasm", mainWorker: BUNDLES + "duckdb-browser-mvp.worker.js" },
+          eh: { mainModule: BUNDLES + "duckdb-eh.wasm", mainWorker: BUNDLES + "duckdb-browser-eh.worker.js" },
+        });
+        const workerUrl = URL.createObjectURL(
+          new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
+        );
+        const worker = new Worker(workerUrl);
+        const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+        await db.instantiate(bundle.mainModule);
+        // httpfs extension honors Range requests; builtin downloads whole
+        // files on every query. See duckdb/duckdb-wasm#2153.
+        const conn = await db.connect();
+        await conn.query("SET builtin_httpfs = false;");
+        await conn.close();
+        return db;
+      })();
+      return dbPromise;
+    }
+
+    async function search(query) {
+      if (!query.trim()) { document.getElementById("results").innerHTML = ""; return; }
+      // Lowercased prefix range matches the parquet's label sort order so
+      // DuckDB fetches only the matching row groups (~2 MB per query).
+      const q = query.toLowerCase().replace(/'/g, "''");
+      const db = await getDb();
+      const conn = await db.connect();
+      const result = await conn.query(`
+        SELECT label, lon, lat
+        FROM '${SEARCH_URL}'
+        WHERE label >= '${q}' AND label < '${q}~'
+        ORDER BY inlink_count DESC
+        LIMIT 8
+      `);
+      const rows = result.toArray().map(r => r.toJSON());
+      await conn.close();
+
+      document.getElementById("results").innerHTML = rows.map((r) => `
+        <div class="search-result" data-lon="${r.lon}" data-lat="${r.lat}" data-label="${r.label.replace(/"/g, "&quot;")}">
+          ${titleCase(r.label)}
+        </div>
+      `).join("");
+      selectedIdx = -1;
+    }
+
+    // queryRenderedFeatures only sees currently-loaded tiles, so callers
+    // must wait for map.once("idle", ...) before calling this.
+    function openArticlePopup(lon, lat, label) {
+      const point = map.project([lon, lat]);
+      const box = [[point.x - 30, point.y - 30], [point.x + 30, point.y + 30]];
+      const feats = map.queryRenderedFeatures(box, { layers: ["articles"] });
+      const lc = label.toLowerCase();
+      const match = feats.find((f) => f.properties.label.toLowerCase() === lc);
+      if (match) {
+        new maplibregl.Popup()
+          .setLngLat([lon, lat])
+          .setHTML(popupHtml(match.properties))
+          .addTo(map);
+      } else {
+        // Fallback for articles tippecanoe dropped at this zoom.
+        new maplibregl.Popup()
+          .setLngLat([lon, lat])
+          .setHTML(`<strong><a href="${wikipediaUrl(label)}" target="_blank" style="color:#7aadff">${label}</a></strong>`)
+          .addTo(map);
+      }
+    }
+
+    function selectResult(el) {
+      const lon = parseFloat(el.dataset.lon);
+      const lat = parseFloat(el.dataset.lat);
+      const label = el.dataset.label;
+      map.easeTo({ center: [lon, lat], zoom: 14 });
+      document.getElementById("results").innerHTML = "";
+      document.getElementById("q").value = "";
+      selectedIdx = -1;
+      map.once("idle", () => openArticlePopup(lon, lat, label));
+    }
+
+    document.getElementById("results").addEventListener("click", (e) => {
+      const el = e.target.closest(".search-result");
+      if (el) selectResult(el);
+    });
+
+    // Keyboard nav: ↑/↓ cycles results, Enter picks the selected one (or
+    // the top result if nothing is highlighted), Escape clears the list.
+    function setSelected(i) {
+      const items = document.querySelectorAll(".search-result");
+      if (!items.length) { selectedIdx = -1; return; }
+      selectedIdx = (i + items.length) % items.length;
+      items.forEach((el, j) => el.classList.toggle("selected", j === selectedIdx));
+      items[selectedIdx].scrollIntoView({ block: "nearest" });
+    }
+
+    document.getElementById("q").addEventListener("keydown", (e) => {
+      const items = document.querySelectorAll(".search-result");
+      if (e.key === "ArrowDown") {
+        if (!items.length) return;
+        e.preventDefault();
+        setSelected(selectedIdx + 1);
+      } else if (e.key === "ArrowUp") {
+        if (!items.length) return;
+        e.preventDefault();
+        setSelected(selectedIdx - 1);
+      } else if (e.key === "Enter") {
+        if (!items.length) return;
+        e.preventDefault();
+        selectResult(items[selectedIdx >= 0 ? selectedIdx : 0]);
+      } else if (e.key === "Escape") {
+        document.getElementById("results").innerHTML = "";
+        selectedIdx = -1;
+      }
+    });
+
+    // Preload DuckDB-WASM on first focus so it's warm by the first keystroke.
+    document.getElementById("q").addEventListener("focus", () => { getDb(); }, { once: true });
+
+    let timer;
+    document.getElementById("q").addEventListener("input", (e) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => search(e.target.value), 300);
+    });
+  </script>
+</body>
+
+</html>
