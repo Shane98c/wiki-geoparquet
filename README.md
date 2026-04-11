@@ -7,15 +7,18 @@ English Wikipedia main-namespace articles with Earth coordinates, as
 Coordinates, inlink counts, article length, Wikidata QIDs, image links, and
 descriptions. Updated monthly from Wikipedia SQL dumps.
 
+**demo:**
+[shane98c.github.io/wiki-geoparquet](https://shane98c.github.io/wiki-geoparquet/)
+
 ## Data
 
 All files are on R2 with CORS enabled — query directly from the browser or any
 Parquet-aware tool:
 
-| File                                                                                                                | Description                                                     |
-| ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| [`wikipedia_geotagged.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet) | GeoParquet, Hilbert-sorted with bbox covering                   |
-| [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles) | Vector tiles, auto-zoom with overzoom, drops by article length  |
+| File                                                                                                                | Description                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| [`wikipedia_geotagged.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet) | GeoParquet, Hilbert-sorted with bbox covering                                                                         |
+| [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles) | Vector tiles, auto-zoom with overzoom, drops by article length                                                        |
 | [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet)       | Lightweight search index (lowercased label, coords, inlink count), sorted by label for prefix-range row-group pruning |
 
 Pinned versions are also available on
@@ -40,6 +43,7 @@ Pinned versions are also available on
 
 The PMTiles carry a subset of these properties (no `geometry`, `qid`,
 `wikipedia_url`, `image_url`, or `bbox`). Reconstruct URLs client-side:
+
 - Article: `https://en.wikipedia.org/?curid={page_id}`
 - Image: `https://commons.wikimedia.org/wiki/Special:FilePath/{image}`
 
@@ -64,10 +68,10 @@ ORDER BY inlink_count DESC;
 
 ### Browser search with duckdb-wasm
 
-The `wikipedia_search.parquet` index has columns `label` (lowercased, used
-for both sorting and lookup), `lon`, `lat`, and `inlink_count` for ranking.
-It's sorted by `label` so a lowercased prefix range lets DuckDB skip row
-groups and fetch ~2 MB per query instead of the full ~25 MB file.
+The `wikipedia_search.parquet` index has columns `label` (lowercased, used for
+both sorting and lookup), `lon`, `lat`, and `inlink_count` for ranking. It's
+sorted by `label` so a lowercased prefix range lets DuckDB skip row groups and
+fetch ~2 MB per query instead of the full ~25 MB file.
 
 ```js
 // In duckdb-wasm, INSTALL httpfs (or SET builtin_httpfs = false) — without
@@ -111,15 +115,14 @@ const map = new maplibregl.Map({
         "source-layer": "wikipedia",
         type: "circle",
         paint: {
-          // sqrt(inlink_count) ranges ~0 (unlinked) to ~280 (Paris ≈ 78k inlinks).
-          // The wide radius range gives strong visual contrast between niche
-          // and landmark articles.
           "circle-radius": [
             "interpolate",
             ["linear"],
             ["sqrt", ["get", "inlink_count"]],
-            0, 2.5,
-            280, 20,
+            0,
+            2.5,
+            280,
+            20,
           ],
           "circle-color": [
             "case",
