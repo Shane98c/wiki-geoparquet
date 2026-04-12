@@ -31,13 +31,7 @@ tiles: $(PARQUET)
 				json_object( \
 					'page_id', page_id, \
 					'label', label, \
-					'description', description, \
-					'elevation', elevation, \
-					'gt_type', gt_type, \
-					'page_len', page_len, \
-					'inlink_count', inlink_count, \
-					'gt_primary', gt_primary, \
-					'image', regexp_extract(image_url, '[^/]+$$') \
+					'inlink_count', inlink_count \
 				) AS properties \
 			FROM '$(PARQUET)' \
 		) TO STDOUT (FORMAT json, ARRAY false); \
@@ -48,6 +42,7 @@ tiles: $(PARQUET)
 		--minimum-zoom=0 -zg \
 		--drop-by-attribute-as-needed=inlink_count \
 		--extend-zooms-if-still-dropping \
+		--maximum-tile-features=500000 \
 		-r1
 
 validate: $(PARQUET)

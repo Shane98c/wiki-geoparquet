@@ -35,17 +35,16 @@ Pinned versions are also available on
 | `description`   | string    | Short description from `wikibase-shortdesc`                   |
 | `gt_type`       | string    | Wikipedia geo classification (city, mountain, landmark, etc.) |
 | `gt_primary`    | bool      | Whether coordinates are the article's primary geo_tag         |
+| `elevation`     | int16     | Ground elevation in meters, sampled from a DEM                |
 | `page_len`      | int32     | Article length in bytes                                       |
 | `inlink_count`  | int32     | Number of namespace-0 pagelinks pointing here                 |
 | `wikipedia_url` | string    | Full article URL                                              |
 | `image_url`     | string    | Wikimedia Commons image URL                                   |
 | `bbox`          | struct    | Covering bbox for spatial predicate pushdown                  |
 
-The PMTiles carry a subset of these properties (no `geometry`, `qid`,
-`wikipedia_url`, `image_url`, or `bbox`). Reconstruct URLs client-side:
-
-- Article: `https://en.wikipedia.org/?curid={page_id}`
-- Image: `https://commons.wikimedia.org/wiki/Special:FilePath/{image}`
+The PMTiles carry only `page_id`, `label`, and `inlink_count`. The demo
+enriches popups on click by querying the GeoParquet directly via DuckDB-WASM.
+Reconstruct article URLs client-side: `https://en.wikipedia.org/?curid={page_id}`
 
 ## Quick start
 

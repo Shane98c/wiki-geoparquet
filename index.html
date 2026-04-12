@@ -138,6 +138,26 @@
     let protocol = new pmtiles.Protocol();
     maplibregl.addProtocol("pmtiles", protocol.tile);
 
+    const PARQUET_URL = "https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet";
+    const dbPromise = (async () => {
+      const BUNDLES = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm/dist/";
+      const bundle = await duckdb.selectBundle({
+        mvp: { mainModule: BUNDLES + "duckdb-mvp.wasm", mainWorker: BUNDLES + "duckdb-browser-mvp.worker.js" },
+        eh: { mainModule: BUNDLES + "duckdb-eh.wasm", mainWorker: BUNDLES + "duckdb-browser-eh.worker.js" },
+      });
+      const workerUrl = URL.createObjectURL(
+        new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
+      );
+      const worker = new Worker(workerUrl);
+      const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+      await db.instantiate(bundle.mainModule);
+      const conn = await db.connect();
+      await conn.query("SET builtin_httpfs = false;");
+      await conn.close();
+      return db;
+    })();
+    const getDb = () => dbPromise;
+
     // Load the Protomaps dark style and override its palette / hide noisy
     // labels before handing the composed style to MapLibre.
     const styleResp = await fetch(
@@ -225,15 +245,48 @@
     }
 
     function popupHtml(f) {
-      const img = imageUrl(f.image);
+      const img = f.image_url || imageUrl(f.image);
+      const href = f.page_id ? `https://en.wikipedia.org/?curid=${f.page_id}` : wikipediaUrl(f.label);
+      const stats = [];
+      if (f.gt_type) stats.push(f.gt_type);
+      if (f.page_len) stats.push(`${(f.page_len / 1024).toFixed(1)} KB`);
+      stats.push(`${f.inlink_count.toLocaleString()} inlinks`);
+      if (f.elevation != null) stats.push(`elev ${f.elevation.toLocaleString()} m`);
       return `
         ${img ? `<div style="width:100%;height:150px;border-radius:4px;margin-bottom:6px;background:#12122a;overflow:hidden"><img src="${img}" style="width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.3s" onload="this.style.opacity=1" onerror="this.parentElement.style.display='none'"></div>` : ""}
-        <strong><a href="${wikipediaUrl(f.label)}" target="_blank" style="color:#7aadff">${f.label}</a></strong>
-        <div style="color:#a0a0b0;font-size:12px;margin:4px 0">${f.description || ""}</div>
-        <div style="color:#8a8aa0;font-size:11px">
-          ${f.gt_type ? `${f.gt_type} · ` : ""}${(f.page_len / 1024).toFixed(1)} KB · ${f.inlink_count.toLocaleString()} inlinks${f.elevation ? ` · elev ${f.elevation.toLocaleString()} m` : ""}
-        </div>
+        <strong><a href="${href}" target="_blank" style="color:#7aadff">${f.label}</a></strong>
+        ${f.description ? `<div style="color:#a0a0b0;font-size:12px;margin:4px 0">${f.description}</div>` : ""}
+        <div style="color:#8a8aa0;font-size:11px;margin-top:4px">${stats.join(" · ")}</div>
       `;
+    }
+
+    const detailsCache = new Map();
+    async function fetchDetails(pageId) {
+      if (detailsCache.has(pageId)) return detailsCache.get(pageId);
+      const p = (async () => {
+        const db = await getDb();
+        const conn = await db.connect();
+        try {
+          const result = await conn.query(`
+            SELECT description, image_url, gt_type, page_len, elevation
+            FROM '${PARQUET_URL}'
+            WHERE page_id = ${Number(pageId)}
+            LIMIT 1
+          `);
+          const r = result.toArray()[0];
+          return {
+            description: r && r.description != null ? String(r.description) : "",
+            image_url: r && r.image_url != null ? String(r.image_url) : "",
+            gt_type: r && r.gt_type != null ? String(r.gt_type) : "",
+            page_len: r && r.page_len != null ? Number(r.page_len) : 0,
+            elevation: r && r.elevation != null ? Number(r.elevation) : null,
+          };
+        } finally {
+          await conn.close();
+        }
+      })();
+      detailsCache.set(pageId, p);
+      return p;
     }
 
     // Globe mode reports false hits for pixels outside the visible sphere
@@ -249,10 +302,16 @@
 
     map.on("click", "articles", (e) => {
       if (!isOverGlobe(e.point)) return;
-      new maplibregl.Popup()
+      const props = e.features[0].properties;
+      const popup = new maplibregl.Popup()
         .setLngLat(e.lngLat)
-        .setHTML(popupHtml(e.features[0].properties))
+        .setHTML(popupHtml(props))
         .addTo(map);
+      if (props.page_id) {
+        fetchDetails(props.page_id).then((extra) => {
+          if (popup.isOpen()) popup.setHTML(popupHtml({ ...props, ...extra }));
+        });
+      }
     });
 
     // Hover label + highlight ring.
@@ -294,34 +353,8 @@
     });
     map.on("mouseleave", "articles", clearHover);
 
-    // DuckDB-WASM is ~7 MB gzipped — defer until the search box is focused
-    // so the map loads instantly for visitors who never search.
     const SEARCH_URL = "https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet";
     let selectedIdx = -1;
-    let dbPromise = null;
-    function getDb() {
-      if (dbPromise) return dbPromise;
-      dbPromise = (async () => {
-        const BUNDLES = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm/dist/";
-        const bundle = await duckdb.selectBundle({
-          mvp: { mainModule: BUNDLES + "duckdb-mvp.wasm", mainWorker: BUNDLES + "duckdb-browser-mvp.worker.js" },
-          eh: { mainModule: BUNDLES + "duckdb-eh.wasm", mainWorker: BUNDLES + "duckdb-browser-eh.worker.js" },
-        });
-        const workerUrl = URL.createObjectURL(
-          new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
-        );
-        const worker = new Worker(workerUrl);
-        const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
-        await db.instantiate(bundle.mainModule);
-        // httpfs extension honors Range requests; builtin downloads whole
-        // files on every query. See duckdb/duckdb-wasm#2153.
-        const conn = await db.connect();
-        await conn.query("SET builtin_httpfs = false;");
-        await conn.close();
-        return db;
-      })();
-      return dbPromise;
-    }
 
     async function search(query) {
       if (!query.trim()) { document.getElementById("results").innerHTML = ""; return; }
@@ -357,10 +390,16 @@
       const lc = label.toLowerCase();
       const match = feats.find((f) => f.properties.label.toLowerCase() === lc);
       if (match) {
-        new maplibregl.Popup()
+        const props = match.properties;
+        const popup = new maplibregl.Popup()
           .setLngLat([lon, lat])
-          .setHTML(popupHtml(match.properties))
+          .setHTML(popupHtml(props))
           .addTo(map);
+        if (props.page_id) {
+          fetchDetails(props.page_id).then((extra) => {
+            if (popup.isOpen()) popup.setHTML(popupHtml({ ...props, ...extra }));
+          });
+        }
       } else {
         // Fallback for articles tippecanoe dropped at this zoom.
         new maplibregl.Popup()
@@ -415,9 +454,6 @@
         selectedIdx = -1;
       }
     });
-
-    // Preload DuckDB-WASM on first focus so it's warm by the first keystroke.
-    document.getElementById("q").addEventListener("focus", () => { getDb(); }, { once: true });
 
     let timer;
     document.getElementById("q").addEventListener("input", (e) => {
