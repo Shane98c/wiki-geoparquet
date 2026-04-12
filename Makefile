@@ -50,7 +50,6 @@ validate: $(PARQUET)
 
 search: $(PARQUET)
 	duckdb -c " \
-		LOAD spatial; \
 		COPY ( \
 			SELECT \
 				lower(label) AS label, \
