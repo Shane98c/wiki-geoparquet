@@ -223,15 +223,6 @@
       zoom: 2.5,
     });
 
-    // URLs are reconstructed client-side to keep pmtiles small.
-    const wikipediaUrl = (label) =>
-      "https://en.wikipedia.org/wiki/" + encodeURIComponent(label.replace(/ /g, "_"));
-    const imageUrl = (image) =>
-      image ? "https://commons.wikimedia.org/wiki/Special:FilePath/" + encodeURIComponent(image) : "";
-
-    // Title-case lowercased search labels for display. Imperfect for
-    // sentence-case articles ("List of animals") but correct for the place
-    // names and landmarks that dominate the dataset.
     const SMALL_WORDS = new Set([
       "a", "an", "the", "and", "or", "but", "nor", "for", "of", "to", "in",
       "on", "at", "by", "from", "with", "de", "la", "le", "du", "van", "von",
@@ -245,16 +236,14 @@
     }
 
     function popupHtml(f) {
-      const img = f.image_url || imageUrl(f.image);
-      const href = f.page_id ? `https://en.wikipedia.org/?curid=${f.page_id}` : wikipediaUrl(f.label);
       const stats = [];
       if (f.gt_type) stats.push(f.gt_type);
       if (f.page_len) stats.push(`${(f.page_len / 1024).toFixed(1)} KB`);
       stats.push(`${f.inlink_count.toLocaleString()} inlinks`);
       if (f.elevation != null) stats.push(`elev ${f.elevation.toLocaleString()} m`);
       return `
-        ${img ? `<div style="width:100%;height:150px;border-radius:4px;margin-bottom:6px;background:#12122a;overflow:hidden"><img src="${img}" style="width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.3s" onload="this.style.opacity=1" onerror="this.parentElement.style.display='none'"></div>` : ""}
-        <strong><a href="${href}" target="_blank" style="color:#7aadff">${f.label}</a></strong>
+        ${f.image_url ? `<div style="width:100%;height:150px;border-radius:4px;margin-bottom:6px;background:#12122a;overflow:hidden"><img src="${f.image_url}?width=300" style="width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.3s" onload="this.style.opacity=1" onerror="this.parentElement.style.display='none'"></div>` : ""}
+        <strong><a href="https://en.wikipedia.org/?curid=${f.page_id}" target="_blank" style="color:#7aadff">${f.label}</a></strong>
         ${f.description ? `<div style="color:#a0a0b0;font-size:12px;margin:4px 0">${f.description}</div>` : ""}
         <div style="color:#8a8aa0;font-size:11px;margin-top:4px">${stats.join(" · ")}</div>
       `;
@@ -267,20 +256,19 @@
         const db = await getDb();
         const conn = await db.connect();
         try {
-          const result = await conn.query(`
+          const r = (await conn.query(`
             SELECT description, image_url, gt_type, page_len, elevation
             FROM '${PARQUET_URL}'
             WHERE page_id = ${Number(pageId)}
             LIMIT 1
-          `);
-          const r = result.toArray()[0];
-          return {
-            description: r && r.description != null ? String(r.description) : "",
-            image_url: r && r.image_url != null ? String(r.image_url) : "",
-            gt_type: r && r.gt_type != null ? String(r.gt_type) : "",
-            page_len: r && r.page_len != null ? Number(r.page_len) : 0,
-            elevation: r && r.elevation != null ? Number(r.elevation) : null,
-          };
+          `)).toArray()[0];
+          return r ? {
+            description: r.description != null ? String(r.description) : "",
+            image_url: r.image_url != null ? String(r.image_url) : "",
+            gt_type: r.gt_type != null ? String(r.gt_type) : "",
+            page_len: r.page_len != null ? Number(r.page_len) : 0,
+            elevation: r.elevation != null ? Number(r.elevation) : null,
+          } : {};
         } finally {
           await conn.close();
         }
@@ -289,10 +277,16 @@
       return p;
     }
 
-    // Globe mode reports false hits for pixels outside the visible sphere
-    // (maplibre-gl-js#7103). project(unproject(pt)) only round-trips to
-    // the original pixel when it's actually on the globe; in mercator this
-    // is a no-op. Used to gate click/hover handlers.
+    function openPopup(lngLat, props) {
+      const popup = new maplibregl.Popup()
+        .setLngLat(lngLat)
+        .setHTML(`<strong style="color:#7aadff">${props.label}</strong><div style="color:#8a8aa0;font-size:11px;margin-top:4px">Loading…</div>`)
+        .addTo(map);
+      fetchDetails(props.page_id).then((extra) => {
+        if (popup.isOpen()) popup.setHTML(popupHtml({ ...props, ...extra }));
+      });
+    }
+
     function isOverGlobe(pt) {
       const ll = map.unproject(pt);
       if (!ll) return false;
@@ -302,16 +296,7 @@
 
     map.on("click", "articles", (e) => {
       if (!isOverGlobe(e.point)) return;
-      const props = e.features[0].properties;
-      const popup = new maplibregl.Popup()
-        .setLngLat(e.lngLat)
-        .setHTML(popupHtml(props))
-        .addTo(map);
-      if (props.page_id) {
-        fetchDetails(props.page_id).then((extra) => {
-          if (popup.isOpen()) popup.setHTML(popupHtml({ ...props, ...extra }));
-        });
-      }
+      openPopup(e.lngLat, e.features[0].properties);
     });
 
     // Hover label + highlight ring.
@@ -381,8 +366,6 @@
       selectedIdx = -1;
     }
 
-    // queryRenderedFeatures only sees currently-loaded tiles, so callers
-    // must wait for map.once("idle", ...) before calling this.
     function openArticlePopup(lon, lat, label) {
       const point = map.project([lon, lat]);
       const box = [[point.x - 30, point.y - 30], [point.x + 30, point.y + 30]];
@@ -390,21 +373,12 @@
       const lc = label.toLowerCase();
       const match = feats.find((f) => f.properties.label.toLowerCase() === lc);
       if (match) {
-        const props = match.properties;
-        const popup = new maplibregl.Popup()
-          .setLngLat([lon, lat])
-          .setHTML(popupHtml(props))
-          .addTo(map);
-        if (props.page_id) {
-          fetchDetails(props.page_id).then((extra) => {
-            if (popup.isOpen()) popup.setHTML(popupHtml({ ...props, ...extra }));
-          });
-        }
+        openPopup([lon, lat], match.properties);
       } else {
-        // Fallback for articles tippecanoe dropped at this zoom.
+        const url = "https://en.wikipedia.org/wiki/" + encodeURIComponent(label.replace(/ /g, "_"));
         new maplibregl.Popup()
           .setLngLat([lon, lat])
-          .setHTML(`<strong><a href="${wikipediaUrl(label)}" target="_blank" style="color:#7aadff">${label}</a></strong>`)
+          .setHTML(`<strong><a href="${url}" target="_blank" style="color:#7aadff">${label}</a></strong>`)
           .addTo(map);
       }
     }
