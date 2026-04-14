@@ -11,7 +11,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 330 # 5.5 hours
+    timeout-minutes: 360 # max GH Actions timeout
     permissions:
       contents: write
 
@@ -58,7 +58,7 @@ jobs:
 
       - name: Extract GeoParquet
         run: make extract
-        timeout-minutes: 180
+        timeout-minutes: 240
 
       - name: Build PMTiles
         run: make tiles TIPPECANOE=~/tippecanoe/tippecanoe
@@ -80,13 +80,13 @@ jobs:
       - name: Upload to R2
         run: |
           npm install -g wrangler
-          wrangler r2 object put wiki-geoparquet/v1/wikipedia_geotagged.parquet \
+          wrangler r2 object put wiki-geoparquet/v2/wikipedia_geotagged.parquet \
             --file data/wikipedia_geotagged.parquet \
             --content-type application/vnd.apache.parquet --remote
-          wrangler r2 object put wiki-geoparquet/v1/wikipedia_geotagged.pmtiles \
+          wrangler r2 object put wiki-geoparquet/v2/wikipedia_geotagged.pmtiles \
             --file data/wikipedia_geotagged.pmtiles \
             --content-type application/vnd.pmtiles --remote
-          wrangler r2 object put wiki-geoparquet/v1/wikipedia_search.parquet \
+          wrangler r2 object put wiki-geoparquet/v2/wikipedia_search.parquet \
             --file data/wikipedia_search.parquet \
             --content-type application/vnd.apache.parquet --remote
         env:

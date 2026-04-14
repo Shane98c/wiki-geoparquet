@@ -2,6 +2,7 @@
 
 DUMP_BASE   := https://dumps.wikimedia.org/enwiki/latest
 DUMP_DIR    := data/dumps
+# Wikipedia SQL dumps (Wikidata truthy NT dump is streamed in-pipeline)
 DUMPS       := geo_tags page page_props linktarget pagelinks
 PARQUET     := data/wikipedia_geotagged.parquet
 PMTILES     := data/wikipedia_geotagged.pmtiles
@@ -79,11 +80,11 @@ release:
 		--clobber
 
 upload:
-	wrangler r2 object put wiki-geoparquet/v1/wikipedia_geotagged.parquet \
+	wrangler r2 object put wiki-geoparquet/v2/wikipedia_geotagged.parquet \
 		--file $(PARQUET) --content-type application/vnd.apache.parquet --remote
-	wrangler r2 object put wiki-geoparquet/v1/wikipedia_geotagged.pmtiles \
+	wrangler r2 object put wiki-geoparquet/v2/wikipedia_geotagged.pmtiles \
 		--file $(PMTILES) --content-type application/vnd.pmtiles --remote
-	wrangler r2 object put wiki-geoparquet/v1/wikipedia_search.parquet \
+	wrangler r2 object put wiki-geoparquet/v2/wikipedia_search.parquet \
 		--file $(SEARCH) --content-type application/vnd.apache.parquet --remote
 
 clean:

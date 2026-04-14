@@ -138,7 +138,7 @@
     let protocol = new pmtiles.Protocol();
     maplibregl.addProtocol("pmtiles", protocol.tile);
 
-    const PARQUET_URL = "https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet";
+    const PARQUET_URL = "https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.parquet";
     const dbPromise = (async () => {
       const BUNDLES = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm/dist/";
       const bundle = await duckdb.selectBundle({
@@ -190,7 +190,7 @@
     };
     style.sources.wikipedia = {
       type: "vector",
-      url: "pmtiles://https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles",
+      url: "pmtiles://https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.pmtiles",
       // Tippecanoe doesn't emit MVT feature IDs, so promote page_id into
       // that slot so setFeatureState() can hover-highlight features.
       promoteId: "page_id",
@@ -338,7 +338,7 @@
     });
     map.on("mouseleave", "articles", clearHover);
 
-    const SEARCH_URL = "https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet";
+    const SEARCH_URL = "https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_search.parquet";
     let selectedIdx = -1;
 
     async function search(query) {

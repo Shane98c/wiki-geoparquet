@@ -4,8 +4,8 @@ English Wikipedia main-namespace articles with Earth coordinates, as
 [GeoParquet](https://geoparquet.org/) +
 [PMTiles](https://docs.protomaps.com/pmtiles/).
 
-Coordinates, inlink counts, article length, Wikidata QIDs, image links, and
-descriptions. Updated monthly from Wikipedia SQL dumps.
+Coordinates from Wikidata P625, enriched with instance type, country, population,
+GeoNames IDs, inlink counts, and more. Updated monthly from Wikidata + Wikipedia dumps.
 
 **demo:**
 [shane98c.github.io/wiki-geoparquet](https://shane98c.github.io/wiki-geoparquet/)
@@ -17,30 +17,34 @@ Parquet-aware tool:
 
 | File                                                                                                                | Description                                                                                                           |
 | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| [`wikipedia_geotagged.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet) | GeoParquet, Hilbert-sorted with bbox covering                                                                         |
-| [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles) | Vector tiles, auto-zoom with overzoom, drops by article length                                                        |
-| [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_search.parquet)       | Lightweight search index (lowercased label, coords, inlink count), sorted by label for prefix-range row-group pruning |
+| [`wikipedia_geotagged.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.parquet) | GeoParquet, Hilbert-sorted with bbox covering                                                                         |
+| [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.pmtiles) | Vector tiles, auto-zoom with overzoom, drops by article length                                                        |
+| [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_search.parquet)       | Lightweight search index (lowercased label, coords, inlink count), sorted by label for prefix-range row-group pruning |
 
 Pinned versions are also available on
 [GitHub Releases](https://github.com/Shane98c/wiki-geoparquet/releases/latest).
 
 ## Schema
 
-| Column          | Type      | Description                                                   |
-| --------------- | --------- | ------------------------------------------------------------- |
-| `geometry`      | WKB Point | WGS84 coordinates                                             |
-| `page_id`       | int32     | Wikipedia page ID                                             |
-| `qid`           | string    | Wikidata QID (e.g. Q90) — use for joins with Wikidata         |
-| `label`         | string    | Article title                                                 |
-| `description`   | string    | Short description from `wikibase-shortdesc`                   |
-| `gt_type`       | string    | Wikipedia geo classification (city, mountain, landmark, etc.) |
-| `gt_primary`    | bool      | Whether coordinates are the article's primary geo_tag         |
-| `elevation`     | int16     | Ground elevation in meters, sampled from a DEM                |
-| `page_len`      | int32     | Article length in bytes                                       |
-| `inlink_count`  | int32     | Number of namespace-0 pagelinks pointing here                 |
-| `wikipedia_url` | string    | Full article URL                                              |
-| `image_url`     | string    | Wikimedia Commons image URL                                   |
-| `bbox`          | struct    | Covering bbox for spatial predicate pushdown                  |
+| Column           | Type           | Description                                              |
+| ---------------- | -------------- | -------------------------------------------------------- |
+| `geometry`       | WKB Point      | WGS84 coordinates (from Wikidata P625)                   |
+| `page_id`        | int32          | Wikipedia page ID                                        |
+| `qid`            | string         | Wikidata QID (e.g. Q90)                                  |
+| `label`          | string         | Article title                                            |
+| `description`    | string         | Short description from `wikibase-shortdesc`              |
+| `instance_of`    | string         | Wikidata P31 type (e.g. "city", "mountain", "museum")    |
+| `country`        | string         | Country name from Wikidata P17                           |
+| `population`     | int64          | Population from Wikidata P1082 (nullable)                |
+| `geonames_id`    | string         | GeoNames ID for cross-referencing                        |
+| `elevation`      | int16          | Ground elevation in meters, sampled from Copernicus DEM  |
+| `gt_type`        | string         | Wikipedia geo classification (supplementary, from geo_tags) |
+| `page_len`       | int32          | Article length in bytes                                  |
+| `inlink_count`   | int32          | Number of namespace-0 pagelinks pointing here            |
+| `wikipedia_url`  | string         | Full article URL                                         |
+| `image_url`      | string         | Wikimedia Commons image URL                              |
+| `related_images` | list\<string\> | Additional Wikidata images (P6802)                       |
+| `bbox`           | struct         | Covering bbox for spatial predicate pushdown             |
 
 The PMTiles carry only `page_id`, `label`, and `inlink_count`. The demo
 enriches popups on click by querying the GeoParquet directly via DuckDB-WASM.
@@ -54,14 +58,14 @@ Reconstruct article URLs client-side: `https://en.wikipedia.org/?curid={page_id}
 INSTALL spatial; LOAD spatial;
 
 -- Find the most notable geotagged articles
-SELECT label, inlink_count, page_len, gt_type, ST_AsText(geometry)
-FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet'
+SELECT label, instance_of, country, inlink_count, ST_AsText(geometry)
+FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.parquet'
 ORDER BY inlink_count DESC
 LIMIT 20;
 
 -- Spatial query: articles within 50km of Paris
-SELECT label, inlink_count, gt_type
-FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.parquet'
+SELECT label, instance_of, country, inlink_count
+FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.parquet'
 ORDER BY inlink_count DESC;
 ```
 
@@ -101,7 +105,7 @@ const map = new maplibregl.Map({
     sources: {
       wikipedia: {
         type: "vector",
-        url: "pmtiles://https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v1/wikipedia_geotagged.pmtiles",
+        url: "pmtiles://https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.pmtiles",
       },
     },
     layers: [
@@ -130,26 +134,25 @@ const map = new maplibregl.Map({
 
 ## How it works
 
-1. Streams 5 Wikipedia SQL dump files (~12 GB) and extracts geotagged pages with
-   Earth coordinates (preferring primary, falling back to non-primary),
-   filtering to main-namespace non-redirect articles. Drops catalog articles
-   (`List of …`, `Listed buildings …`, `Timeline of …`) when their coord is
-   non-primary — that's how we distinguish "Timeline of Pittsburgh" (a city
-   history, kept) from "Timeline of the Syrian civil war" (an event at an
-   incidental location, dropped)
-2. Joins with page metadata, Wikidata properties, and pagelinks-based inlink
-   counts
-3. Writes Hilbert-sorted GeoParquet with bbox covering via DuckDB spatial
-4. Pipes DuckDB to [tippecanoe](https://github.com/felt/tippecanoe) for PMTiles
+1. Streams the Wikidata truthy N-Triples dump (~70 GB) to extract P625
+   coordinates and enrichment properties (instance type, country, population,
+   GeoNames ID, images)
+2. Resolves P31/P17 QIDs to human-readable labels via the Wikidata API
+3. Streams 5 Wikipedia SQL dump files (~12 GB) for article metadata, images,
+   descriptions, and inlink counts
+4. Writes Hilbert-sorted GeoParquet with bbox covering via DuckDB spatial
+5. Pipes DuckDB to [tippecanoe](https://github.com/felt/tippecanoe) for PMTiles
    with attribute-based feature dropping
 
 See the [Makefile](Makefile) for build steps.
 
 ## Data source
 
-All data from
-[English Wikipedia SQL dumps](https://dumps.wikimedia.org/enwiki/latest/),
-released under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+Coordinates and enrichment from
+[Wikidata entity dumps](https://dumps.wikimedia.org/wikidatawiki/entities/),
+article metadata from
+[English Wikipedia SQL dumps](https://dumps.wikimedia.org/enwiki/latest/).
+Both released under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
 ## License
 
