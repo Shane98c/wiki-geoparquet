@@ -189,11 +189,20 @@ def _parse_nt_value(raw_bytes, prop):
     raw = raw_bytes.decode("utf-8", errors="replace")
 
     if prop == "P625":
-        m = re.search(r'Point\(([^ ]+) ([^)]+)\)', raw)
-        if m:
-            lon, lat = float(m.group(1)), float(m.group(2))
-            if -90 <= lat <= 90 and -180 <= lon <= 180:
-                return (lat, lon)
+        # Format: "Point(lon lat)"^^geo:wktLiteral — default globe is Earth.
+        # Non-Earth coords have a globe URI prefix:
+        #   "<http://www.wikidata.org/entity/Q405> Point(...)"^^geo:wktLiteral
+        # Only Q2 (Earth) is acceptable; reject Moon/Mars/etc. so they don't
+        # get plotted on Earth at bogus locations.
+        m = re.search(r'"(?:<([^>]+)>\s+)?Point\(([^ ]+) ([^)]+)\)"', raw)
+        if not m:
+            return None
+        globe = m.group(1)
+        if globe and not globe.endswith("/entity/Q2"):
+            return None
+        lon, lat = float(m.group(2)), float(m.group(3))
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return (lat, lon)
         return None
 
     if prop in ("P31", "P17"):
@@ -230,29 +239,48 @@ def step1_wikidata(test_mode):
 
     grep_pattern = "|".join(f"/direct/{p}>" for p in WIKIDATA_PROPERTIES)
 
+    # curl uses --fail so HTTP errors exit non-zero; pipefail propagates any
+    # stage's failure so a truncated download surfaces as a non-zero exit code
+    # instead of silently succeeding via grep's 0 status on partial input.
     if test_mode:
         cmd = (
-            f'curl -sL -H "User-Agent: {USER_AGENT}" "{WIKIDATA_NT_URL}" '
-            f'| gunzip 2>/dev/null '
+            f'curl -sSL --fail --retry 3 --retry-delay 5 '
+            f'-H "User-Agent: {USER_AGENT}" "{WIKIDATA_NT_URL}" '
+            f'| gunzip '
             f'| head -5000000 '
             f'| grep -E "{grep_pattern}"'
         )
         print(f"  ** TEST MODE — first 5M lines only **")
     else:
         cmd = (
-            f'curl -sL -H "User-Agent: {USER_AGENT}" "{WIKIDATA_NT_URL}" '
-            f'| gunzip 2>/dev/null '
+            f'curl -sSL --fail --retry 3 --retry-delay 5 '
+            f'-H "User-Agent: {USER_AGENT}" "{WIKIDATA_NT_URL}" '
+            f'| gunzip '
             f'| grep -E "{grep_pattern}"'
         )
 
     print(f"  URL: {WIKIDATA_NT_URL}")
     print(f"  Properties: {', '.join(WIKIDATA_PROPERTIES)}")
 
+    # Triples in the NT dump are grouped by entity, so we buffer the current
+    # entity's properties and only commit to `wikidata` at the entity boundary
+    # if P625 was seen. Without this, ~32M entities (P31/P17/etc. but no P625)
+    # would accumulate in memory and be discarded at the end — causing GC
+    # pressure that degrades throughput by 3x on GH Actions runners.
     wikidata = {}
+    buffer = {}
+    current_qid = None
     total = 0
     start = time.time()
 
-    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    # Invoke via bash -o pipefail so a failure in any pipeline stage (curl
+    # disconnect, gunzip error) surfaces as a non-zero exit, instead of grep
+    # reporting success on a truncated stream.
+    proc = subprocess.Popen(
+        ["bash", "-o", "pipefail", "-c", cmd],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
     for line in proc.stdout:
         m = _NT_RE.match(line)
@@ -268,34 +296,45 @@ def step1_wikidata(test_mode):
 
         total += 1
 
-        if qid not in wikidata:
-            wikidata[qid] = {}
-
-        wd = wikidata[qid]
+        # Entity transition: commit the previous entity if it had P625.
+        if qid != current_qid:
+            if current_qid is not None and "lat" in buffer:
+                wikidata[current_qid] = buffer
+            buffer = {}
+            current_qid = qid
 
         if prop == "P625":
-            wd["lat"], wd["lon"] = value
-        elif prop == "P31" and "instance_of" not in wd:
-            wd["instance_of"] = value
-        elif prop == "P17" and "country" not in wd:
-            wd["country"] = value
+            buffer["lat"], buffer["lon"] = value
+        elif prop == "P31" and "instance_of" not in buffer:
+            buffer["instance_of"] = value
+        elif prop == "P17" and "country" not in buffer:
+            buffer["country"] = value
         elif prop == "P1082":
-            wd["population"] = value
+            buffer["population"] = value
         elif prop == "P1566":
-            wd["geonames_id"] = value
+            buffer["geonames_id"] = value
         elif prop == "P18":
-            wd["p18_image"] = value
+            buffer["p18_image"] = value
         elif prop == "P6802":
-            wd.setdefault("related_images", []).append(value)
+            buffer.setdefault("related_images", []).append(value)
 
         if total % 500_000 == 0:
-            p625 = sum(1 for v in wikidata.values() if "lat" in v)
-            print(f"  ...{total:,} triples, {len(wikidata):,} items, {p625:,} with P625")
+            print(f"  ...{total:,} triples, {len(wikidata):,} items with P625")
 
-    proc.wait()
+    # Commit final buffered entity
+    if current_qid is not None and "lat" in buffer:
+        wikidata[current_qid] = buffer
 
-    # Keep only items that have coordinates
-    wikidata = {qid: v for qid, v in wikidata.items() if "lat" in v}
+    returncode = proc.wait()
+    # In test mode the `head` stage deliberately closes the pipe early, which
+    # propagates SIGPIPE up to curl and yields a non-zero exit — expected, not
+    # a real failure. In production any non-zero exit means a truncated stream.
+    if returncode != 0 and not test_mode:
+        stderr = proc.stderr.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Wikidata NT dump pipeline exited with code {returncode} — "
+            f"refusing to publish a truncated dataset. stderr: {stderr.strip()}"
+        )
 
     elapsed = time.time() - start
     print(f"  Processed {total:,} triples in {elapsed / 60:.1f} minutes")
@@ -304,12 +343,18 @@ def step1_wikidata(test_mode):
     return wikidata
 
 
-def _resolve_qid_labels(wikidata):
-    """Resolve P31 and P17 QIDs to human-readable labels via Wikidata API."""
+def _resolve_qid_labels(entries):
+    """Resolve P31 and P17 QIDs to human-readable labels via Wikidata API.
+
+    Called after page_props filtering so we only resolve QIDs for items that
+    actually survive into the output — avoids unnecessary API calls and
+    avoids failing the build on missing labels for QIDs that would have been
+    filtered out anyway.
+    """
     print("\n→ Resolving instance_of/country labels from Wikidata API...")
 
     qids_to_resolve = set()
-    for v in wikidata.values():
+    for v in entries.values():
         if v.get("instance_of"):
             qids_to_resolve.add(v["instance_of"])
         if v.get("country"):
@@ -369,7 +414,7 @@ def _resolve_qid_labels(wikidata):
             f"(e.g. {', '.join(sample)}); refusing to publish data with raw Q-IDs."
         )
 
-    for v in wikidata.values():
+    for v in entries.values():
         qid = v.get("instance_of", "")
         if qid:
             v["instance_of"] = labels[qid]
@@ -746,8 +791,6 @@ def main():
         print("ERROR: No Wikidata coordinates found!")
         sys.exit(1)
 
-    _resolve_qid_labels(wikidata)
-
     # Step 2: Map QIDs to Wikipedia page_ids
     geo_pages = step2_page_props(wikidata, args.test)
     del wikidata
@@ -755,6 +798,11 @@ def main():
     if not geo_pages:
         print("ERROR: No pages matched Wikidata coordinates!")
         sys.exit(1)
+
+    # Resolve QID labels only for items that survived the enwiki join —
+    # avoids wasted API calls and false failures on QIDs that would be
+    # filtered out anyway.
+    _resolve_qid_labels(geo_pages)
 
     # Steps 3-6: Wikipedia dump enrichment
     step3_geo_tags(geo_pages, args.test)
