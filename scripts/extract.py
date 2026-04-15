@@ -352,6 +352,7 @@ def _resolve_qid_labels(entries):
     filtered out anyway.
     """
     print("\n→ Resolving instance_of/country labels from Wikidata API...")
+    start = time.time()
 
     qids_to_resolve = set()
     for v in entries.values():
@@ -404,7 +405,8 @@ def _resolve_qid_labels(entries):
         if i > 0 and (i // batch_size) % 20 == 0:
             print(f"  ...resolved {len(labels):,}/{len(qids_to_resolve):,}")
 
-    print(f"  Resolved {len(labels):,} labels")
+    elapsed = time.time() - start
+    print(f"  Resolved {len(labels):,} labels ({elapsed / 60:.1f}m)")
 
     unresolved = qids_to_resolve - set(labels)
     if unresolved:
@@ -424,6 +426,7 @@ def _resolve_qid_labels(entries):
 def step2_page_props(wikidata, test_mode):
     """Map QID→page_id via page_props; collect images and descriptions."""
     print(f"\n→ Step 2/6: Streaming page_props (~1GB)...")
+    start = time.time()
     total = 0
     target_props = {'page_image_free', 'wikibase_item', 'wikibase-shortdesc'}
     limit = 500 if test_mode else None
@@ -486,7 +489,8 @@ def step2_page_props(wikidata, test_mode):
 
     with_image = sum(1 for p in geo_pages.values() if p["image_url"])
     with_desc = sum(1 for p in geo_pages.values() if p["description"])
-    print(f"  Scanned {total:,} page_props → {len(geo_pages):,} pages with Wikidata P625")
+    elapsed = time.time() - start
+    print(f"  Scanned {total:,} page_props → {len(geo_pages):,} pages with Wikidata P625 ({elapsed / 60:.1f}m)")
     print(f"  With images: {with_image:,}, with descriptions: {with_desc:,}")
 
     return geo_pages
@@ -500,6 +504,7 @@ def step3_geo_tags(geo_pages, test_mode):
     location rather than an incidental secondary tag.
     """
     print(f"\n→ Step 3/6: Streaming geo_tags for gt_type (~52MB)...")
+    start = time.time()
     total = 0
     matched = 0
     limit = 50 if test_mode else None
@@ -538,12 +543,14 @@ def step3_geo_tags(geo_pages, test_mode):
     for info in geo_pages.values():
         info.pop("_gt_type_primary", None)
 
-    print(f"  Scanned {total:,} geo_tags → {matched:,} pages got gt_type")
+    elapsed = time.time() - start
+    print(f"  Scanned {total:,} geo_tags → {matched:,} pages got gt_type ({elapsed / 60:.1f}m)")
 
 
 def step4_page(geo_pages, test_mode):
     """Get page titles, lengths; filter out redirects and non-articles."""
     print(f"\n→ Step 4/6: Streaming page (~2.4GB)...")
+    start = time.time()
     matched = 0
     total = 0
     limit = 500 if test_mode else None
@@ -580,48 +587,88 @@ def step4_page(geo_pages, test_mode):
     for pid in to_remove:
         del geo_pages[pid]
 
-    print(f"  Scanned {total:,} pages → {len(geo_pages):,} articles matched")
+    elapsed = time.time() - start
+    print(f"  Scanned {total:,} pages → {len(geo_pages):,} articles matched ({elapsed / 60:.1f}m)")
+
+
+# Match `(id,0,'title')` linktarget rows where ns=0. The title capture allows
+# backslash-escape sequences since MediaWiki SQL dumps escape special chars.
+# Skipping non-ns=0 tuples this way avoids parsing ~90% of the dump.
+_LT_NS0_RE = re.compile(rb"\((\d+),0,'((?:[^'\\]|\\.)*)'\)")
 
 
 def step5_linktarget(geo_pages, test_mode):
     """Map page titles to linktarget IDs (needed for pagelinks lookup)."""
     print(f"\n→ Step 5/6: Streaming linktarget (~1.4GB)...")
+    start = time.time()
 
-    title_to_pid = {}
+    # Re-encode titles as their raw SQL-dump byte form so we can match
+    # against linktarget bytes directly, skipping per-row UTF-8 decode.
+    # Order matters: escape backslash first, then the quote chars it could
+    # produce. MediaWiki titles don't contain control chars in practice.
+    title_bytes_to_pid = {}
     for pid, info in geo_pages.items():
         title = info.get("title", "")
         if title:
-            title_to_pid[title] = pid
+            escaped = (title.replace("\\", "\\\\")
+                            .replace("'", "\\'")
+                            .replace('"', '\\"'))
+            title_bytes_to_pid[escaped.encode("utf-8")] = pid
+
+    filename = DUMP_FILES["linktarget"]
+    local_path = os.path.join(DUMP_LOCAL_DIR, filename)
+    if os.path.exists(local_path):
+        print(f"  Reading local: {local_path}")
+        gz = gzip.open(local_path, 'rb')
+    else:
+        url = f"{DUMP_BASE_URL}/{filename}"
+        print(f"  Streaming: {url}")
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        resp = urllib.request.urlopen(req)
+        gz = gzip.GzipFile(fileobj=resp)
 
     lt_id_to_pid = {}
-    total = 0
+    insert_lines = 0
+    matched_ns0 = 0
     limit = 500 if test_mode else None
 
-    for t in stream_dump("linktarget", "linktarget", max_insert_lines=limit):
-        total += 1
-        if len(t) < 3:
+    for line in gz:
+        if not line.startswith(b'INSERT'):
             continue
+        insert_lines += 1
+        if limit and insert_lines > limit:
+            break
 
-        lt_ns = t[1]
-        if lt_ns != 0:
-            continue
+        for m in _LT_NS0_RE.finditer(line):
+            matched_ns0 += 1
+            pid = title_bytes_to_pid.get(m.group(2))
+            if pid is not None:
+                lt_id_to_pid[int(m.group(1))] = pid
 
-        lt_title = t[2]
-        if lt_title in title_to_pid:
-            lt_id_to_pid[t[0]] = title_to_pid[lt_title]
+        if insert_lines % 500 == 0:
+            print(f"  ...{insert_lines:,} INSERT lines, "
+                  f"{matched_ns0:,} ns=0 rows, {len(lt_id_to_pid):,} mapped")
 
-        if total % 1_000_000 == 0:
-            print(f"  ...scanned {total:,} targets, mapped {len(lt_id_to_pid):,}")
+    gz.close()
 
-    print(f"  Scanned {total:,} linktargets → mapped {len(lt_id_to_pid):,} to geo pages")
+    elapsed = time.time() - start
+    print(f"  Scanned {insert_lines:,} INSERT lines, {matched_ns0:,} ns=0 rows "
+          f"→ mapped {len(lt_id_to_pid):,} to geo pages ({elapsed / 60:.1f}m)")
     return lt_id_to_pid
 
 
 def step6_pagelinks(geo_pages, lt_id_to_pid, test_mode):
     """Count inbound article links for each geo page."""
     print(f"\n→ Step 6/6: Streaming pagelinks (~6.9GB)...")
+    start = time.time()
 
     _NS0_RE = re.compile(rb'\(\d+,0,(\d+)\)')
+    # Regex groups are bytes already; keep the hot-path lookup in bytes form
+    # so we avoid int() conversion for every namespace-0 pagelink candidate.
+    target_id_bytes_to_pid = {
+        str(target_id).encode("ascii"): pid
+        for target_id, pid in lt_id_to_pid.items()
+    }
 
     inlink_counts = {}
     lines = 0
@@ -652,9 +699,8 @@ def step6_pagelinks(geo_pages, lt_id_to_pid, test_mode):
 
         lines += 1
         for m in _NS0_RE.finditer(line_bytes):
-            target_id = int(m.group(1))
-            if target_id in lt_id_to_pid:
-                pid = lt_id_to_pid[target_id]
+            pid = target_id_bytes_to_pid.get(m.group(1))
+            if pid is not None:
                 inlink_counts[pid] = inlink_counts.get(pid, 0) + 1
                 hits += 1
 
@@ -667,7 +713,9 @@ def step6_pagelinks(geo_pages, lt_id_to_pid, test_mode):
         geo_pages[pid]["inlink_count"] = count
 
     with_inlinks = sum(1 for p in geo_pages.values() if p.get("inlink_count", 0) > 0)
-    print(f"  Scanned {lines:,} INSERT lines, {hits:,} hits → {with_inlinks:,} pages have inlinks")
+    elapsed = time.time() - start
+    print(f"  Scanned {lines:,} INSERT lines, {hits:,} hits → "
+          f"{with_inlinks:,} pages have inlinks ({elapsed / 60:.1f}m)")
 
 
 # ── Elevation lookup ──────────────────────────────────────────
@@ -697,6 +745,7 @@ def sample_elevations(rows):
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    start = time.time()
     tile_groups = defaultdict(list)
     for i, r in enumerate(rows):
         key, tile_name = _cop_dem_tile_key(r["latitude"], r["longitude"])
@@ -756,9 +805,10 @@ def sample_elevations(rows):
                     print(f"  ...{done_tiles:,}/{len(tile_groups):,} tiles, "
                           f"{sampled:,} points sampled")
 
+    elapsed = time.time() - start
     print(f"  Sampled {len(rows) - failed_tiles:,} points from "
           f"{done_tiles - failed_tiles:,} tiles "
-          f"({failed_tiles:,} missing/ocean tiles → elevation 0)")
+          f"({failed_tiles:,} missing/ocean tiles → elevation 0) ({elapsed / 60:.1f}m)")
 
 
 # ── Main ──────────────────────────────────────────────────────
