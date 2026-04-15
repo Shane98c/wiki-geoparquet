@@ -408,19 +408,15 @@ def _resolve_qid_labels(entries):
 
     unresolved = qids_to_resolve - set(labels)
     if unresolved:
-        sample = sorted(unresolved)[:10]
-        raise RuntimeError(
-            f"{len(unresolved):,} QIDs have no English label on Wikidata "
-            f"(e.g. {', '.join(sample)}); refusing to publish data with raw Q-IDs."
-        )
+        print(f"  {len(unresolved):,} QIDs have no English label; dropping those values")
 
     for v in entries.values():
         qid = v.get("instance_of", "")
         if qid:
-            v["instance_of"] = labels[qid]
+            v["instance_of"] = labels.get(qid, "")
         qid = v.get("country", "")
         if qid:
-            v["country"] = labels[qid]
+            v["country"] = labels.get(qid, "")
 
 
 # ── Processing steps ──────────────────────────────────────────
