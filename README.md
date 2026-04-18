@@ -63,10 +63,13 @@ FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged
 ORDER BY inlink_count DESC
 LIMIT 20;
 
--- Spatial query: articles within 50km of Paris
+-- Articles near Paris (48.8566, 2.3522) — ~50km bbox
 SELECT label, instance_of, country, inlink_count
 FROM 'https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.parquet'
-ORDER BY inlink_count DESC;
+WHERE bbox.xmin BETWEEN 1.7 AND 3.0
+  AND bbox.ymin BETWEEN 48.4 AND 49.3
+ORDER BY inlink_count DESC
+LIMIT 20;
 ```
 
 ### Browser search with duckdb-wasm
