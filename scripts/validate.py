@@ -108,40 +108,59 @@ def main():
     enrichment = db.execute(f"""
         SELECT
             count(*) FILTER (WHERE instance_of != ''),
+            count(*) FILTER (WHERE instance_of_qid != ''),
             count(*) FILTER (WHERE country != ''),
             count(*) FILTER (WHERE population IS NOT NULL),
             count(*) FILTER (WHERE geonames_id != '')
         FROM '{PARQUET_FILE}'
     """).fetchone()
-    with_instance, with_country, with_pop, with_geonames = enrichment
+    with_instance, with_instance_qid, with_country, with_pop, with_geonames = enrichment
 
     check("instance_of populated for >30%",
           with_instance > n * 0.3,
           f"only {with_instance:,} ({100 * with_instance / n:.0f}%)")
+    check("instance_of_qid populated for >30%",
+          with_instance_qid > n * 0.3,
+          f"only {with_instance_qid:,} ({100 * with_instance_qid / n:.0f}%)")
     check("country populated for >30%",
           with_country > n * 0.3,
           f"only {with_country:,} ({100 * with_country / n:.0f}%)")
 
-    # Reject unresolved raw Q-IDs — label resolution must succeed for every value.
+    # instance_of_qid should contain Q-IDs; instance_of should not.
     raw_qids = db.execute(f"""
         SELECT
             count(*) FILTER (WHERE instance_of ~ '^Q[0-9]+$'),
-            count(*) FILTER (WHERE country ~ '^Q[0-9]+$')
+            count(*) FILTER (WHERE country ~ '^Q[0-9]+$'),
+            count(*) FILTER (WHERE instance_of_qid != '' AND instance_of_qid !~ '^Q[0-9]+$')
         FROM '{PARQUET_FILE}'
     """).fetchone()
-    raw_instance_qids, raw_country_qids = raw_qids
+    raw_instance_qids, raw_country_qids, malformed_qid_col = raw_qids
     check("instance_of has no raw Q-IDs",
           raw_instance_qids == 0,
           f"{raw_instance_qids:,} rows contain unresolved Q-IDs")
     check("country has no raw Q-IDs",
           raw_country_qids == 0,
           f"{raw_country_qids:,} rows contain unresolved Q-IDs")
+    check("instance_of_qid values are Q-IDs",
+          malformed_qid_col == 0,
+          f"{malformed_qid_col:,} rows have non-QID values in instance_of_qid")
+
+    # instance_of and instance_of_qid should be populated for the same rows —
+    # if they diverge, the pipeline lost the QID between step1 and assembly.
+    divergent = db.execute(f"""
+        SELECT count(*) FROM '{PARQUET_FILE}'
+        WHERE (instance_of = '') != (instance_of_qid = '')
+    """).fetchone()[0]
+    check("instance_of and instance_of_qid co-populated",
+          divergent == 0,
+          f"{divergent:,} rows where one is set and the other isn't")
 
     print(f"\n  Wikidata enrichment:")
-    print(f"    instance_of: {with_instance:>8,} ({100 * with_instance / n:.0f}%)")
-    print(f"    country:     {with_country:>8,} ({100 * with_country / n:.0f}%)")
-    print(f"    population:  {with_pop:>8,} ({100 * with_pop / n:.0f}%)")
-    print(f"    geonames_id: {with_geonames:>8,} ({100 * with_geonames / n:.0f}%)")
+    print(f"    instance_of:     {with_instance:>8,} ({100 * with_instance / n:.0f}%)")
+    print(f"    instance_of_qid: {with_instance_qid:>8,} ({100 * with_instance_qid / n:.0f}%)")
+    print(f"    country:         {with_country:>8,} ({100 * with_country / n:.0f}%)")
+    print(f"    population:      {with_pop:>8,} ({100 * with_pop / n:.0f}%)")
+    print(f"    geonames_id:     {with_geonames:>8,} ({100 * with_geonames / n:.0f}%)")
 
     # instance_of breakdown
     instance_rows = db.execute(f"""

@@ -33,7 +33,8 @@ Pinned versions are also available on
 | `qid`            | string         | Wikidata QID (e.g. Q90)                                  |
 | `label`          | string         | Article title                                            |
 | `description`    | string         | Short description from `wikibase-shortdesc`              |
-| `instance_of`    | string         | Wikidata P31 type (e.g. "city", "mountain", "museum")    |
+| `instance_of`    | string         | Wikidata P31 type label (e.g. "city", "mountain", "museum") |
+| `instance_of_qid`| string         | Wikidata P31 QID (e.g. "Q515", "Q8502") — for downstream mapping to custom taxonomies |
 | `country`        | string         | Country name from Wikidata P17                           |
 | `population`     | int64          | Population from Wikidata P1082 (nullable)                |
 | `geonames_id`    | string         | GeoNames ID for cross-referencing                        |

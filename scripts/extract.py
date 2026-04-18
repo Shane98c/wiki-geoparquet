@@ -307,6 +307,7 @@ def step1_wikidata(test_mode):
             buffer["lat"], buffer["lon"] = value
         elif prop == "P31" and "instance_of" not in buffer:
             buffer["instance_of"] = value
+            buffer["instance_of_qid"] = value
         elif prop == "P17" and "country" not in buffer:
             buffer["country"] = value
         elif prop == "P1082":
@@ -479,6 +480,7 @@ def step2_page_props(wikidata, test_mode):
             "lon": wd["lon"],
             "qid": qid,
             "instance_of": wd.get("instance_of", ""),
+            "instance_of_qid": wd.get("instance_of_qid", ""),
             "country": wd.get("country", ""),
             "population": wd.get("population"),
             "geonames_id": wd.get("geonames_id", ""),
@@ -824,6 +826,7 @@ def _save_wikidata_cache(wikidata, path):
         "lat": pa.array([wikidata[q]["lat"] for q in qids], type=pa.float64()),
         "lon": pa.array([wikidata[q]["lon"] for q in qids], type=pa.float64()),
         "instance_of": pa.array([wikidata[q].get("instance_of", "") for q in qids], type=pa.string()),
+        "instance_of_qid": pa.array([wikidata[q].get("instance_of_qid", "") for q in qids], type=pa.string()),
         "country": pa.array([wikidata[q].get("country", "") for q in qids], type=pa.string()),
         "population": pa.array([wikidata[q].get("population") for q in qids], type=pa.int64()),
         "geonames_id": pa.array([wikidata[q].get("geonames_id", "") for q in qids], type=pa.string()),
@@ -842,6 +845,9 @@ def _load_wikidata_cache(path):
 
     print(f"\n→ Loading cached Wikidata from {path}...")
     table = pq.read_table(path)
+    # Older caches (pre-instance_of_qid column) stored the QID in instance_of
+    # since caching happens before label resolution — fall back to that.
+    has_qid_col = "instance_of_qid" in table.column_names
     wikidata = {}
     for i in range(len(table)):
         qid = table["qid"][i].as_py()
@@ -850,6 +856,9 @@ def _load_wikidata_cache(path):
             v = table[col][i].as_py()
             if v:
                 entry[col] = v
+        iq = table["instance_of_qid"][i].as_py() if has_qid_col else entry.get("instance_of", "")
+        if iq:
+            entry["instance_of_qid"] = iq
         pop = table["population"][i].as_py()
         if pop is not None:
             entry["population"] = pop
@@ -932,6 +941,7 @@ def main():
             "label": title.replace("_", " "),
             "description": info.get("description", ""),
             "instance_of": info.get("instance_of", ""),
+            "instance_of_qid": info.get("instance_of_qid", ""),
             "country": info.get("country", ""),
             "population": info.get("population"),
             "geonames_id": info.get("geonames_id", ""),
@@ -962,6 +972,7 @@ def main():
     with_image = sum(1 for r in rows if r["image_url"])
     with_inlinks = sum(1 for r in rows if r["inlink_count"] > 0)
     with_instance = sum(1 for r in rows if r["instance_of"])
+    with_instance_qid = sum(1 for r in rows if r["instance_of_qid"])
     with_country = sum(1 for r in rows if r["country"])
     with_pop = sum(1 for r in rows if r["population"] is not None)
     with_geonames = sum(1 for r in rows if r["geonames_id"])
@@ -971,6 +982,7 @@ def main():
 
     print(f"  With images:      {with_image:,} ({100 * with_image / len(rows):.0f}%)")
     print(f"  With instance_of: {with_instance:,} ({100 * with_instance / len(rows):.0f}%)")
+    print(f"  With instance_of_qid: {with_instance_qid:,} ({100 * with_instance_qid / len(rows):.0f}%)")
     print(f"  With country:     {with_country:,} ({100 * with_country / len(rows):.0f}%)")
     print(f"  With population:  {with_pop:,} ({100 * with_pop / len(rows):.0f}%)")
     print(f"  With GeoNames ID: {with_geonames:,} ({100 * with_geonames / len(rows):.0f}%)")
@@ -993,6 +1005,7 @@ def main():
         "label": pa.array([r["label"] for r in rows], type=pa.string()),
         "description": pa.array([r["description"] for r in rows], type=pa.string()),
         "instance_of": pa.array([r["instance_of"] for r in rows], type=pa.string()),
+        "instance_of_qid": pa.array([r["instance_of_qid"] for r in rows], type=pa.string()),
         "country": pa.array([r["country"] for r in rows], type=pa.string()),
         "population": pa.array([r["population"] for r in rows], type=pa.int64()),
         "geonames_id": pa.array([r["geonames_id"] for r in rows], type=pa.string()),
@@ -1015,8 +1028,8 @@ def main():
         COPY (
             SELECT
                 ST_Point(longitude, latitude) AS geometry,
-                page_id, qid, label, description, instance_of, country,
-                population, geonames_id, elevation, gt_type,
+                page_id, qid, label, description, instance_of, instance_of_qid,
+                country, population, geonames_id, elevation, gt_type,
                 page_len, inlink_count, wikipedia_url, image_url,
                 related_images
             FROM raw
