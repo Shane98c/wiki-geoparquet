@@ -813,12 +813,65 @@ def sample_elevations(rows):
 
 # ── Main ──────────────────────────────────────────────────────
 
+def _save_wikidata_cache(wikidata, path):
+    """Save the wikidata dict to parquet for cross-job caching."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    qids = sorted(wikidata.keys())
+    table = pa.table({
+        "qid": pa.array(qids, type=pa.string()),
+        "lat": pa.array([wikidata[q]["lat"] for q in qids], type=pa.float64()),
+        "lon": pa.array([wikidata[q]["lon"] for q in qids], type=pa.float64()),
+        "instance_of": pa.array([wikidata[q].get("instance_of", "") for q in qids], type=pa.string()),
+        "country": pa.array([wikidata[q].get("country", "") for q in qids], type=pa.string()),
+        "population": pa.array([wikidata[q].get("population") for q in qids], type=pa.int64()),
+        "geonames_id": pa.array([wikidata[q].get("geonames_id", "") for q in qids], type=pa.string()),
+        "p18_image": pa.array([wikidata[q].get("p18_image", "") for q in qids], type=pa.string()),
+        "related_images": pa.array([wikidata[q].get("related_images", []) for q in qids],
+                                   type=pa.list_(pa.string())),
+    })
+    pq.write_table(table, path, compression="zstd")
+    del table
+    print(f"  Saved {len(qids):,} items to {path} ({os.path.getsize(path) / 1048576:.0f} MiB)")
+
+
+def _load_wikidata_cache(path):
+    """Load the wikidata dict from a cached parquet file."""
+    import pyarrow.parquet as pq
+
+    print(f"\n→ Loading cached Wikidata from {path}...")
+    table = pq.read_table(path)
+    wikidata = {}
+    for i in range(len(table)):
+        qid = table["qid"][i].as_py()
+        entry = {"lat": table["lat"][i].as_py(), "lon": table["lon"][i].as_py()}
+        for col in ("instance_of", "country", "geonames_id", "p18_image"):
+            v = table[col][i].as_py()
+            if v:
+                entry[col] = v
+        pop = table["population"][i].as_py()
+        if pop is not None:
+            entry["population"] = pop
+        imgs = table["related_images"][i].as_py()
+        if imgs:
+            entry["related_images"] = imgs
+        wikidata[qid] = entry
+    del table
+    print(f"  Loaded {len(wikidata):,} items with P625 coordinates")
+    return wikidata
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Extract geotagged Wikipedia articles into GeoParquet"
     )
     parser.add_argument("--test", action="store_true",
                         help="Test mode: process small subset of each dump")
+    parser.add_argument("--save-wikidata",
+                        help="Run step 1 only, save result to parquet, then exit")
+    parser.add_argument("--load-wikidata",
+                        help="Skip step 1, load wikidata from cached parquet")
     args = parser.parse_args()
 
     os.makedirs("data", exist_ok=True)
@@ -832,10 +885,19 @@ def main():
     start = time.time()
 
     # Step 1: Wikidata coordinates + enrichment
-    wikidata = step1_wikidata(args.test)
+    if args.load_wikidata:
+        wikidata = _load_wikidata_cache(args.load_wikidata)
+    else:
+        wikidata = step1_wikidata(args.test)
     if not wikidata:
         print("ERROR: No Wikidata coordinates found!")
         sys.exit(1)
+
+    if args.save_wikidata:
+        _save_wikidata_cache(wikidata, args.save_wikidata)
+        elapsed = time.time() - start
+        print(f"\nStep 1 complete in {elapsed / 60:.1f} minutes — exiting.")
+        sys.exit(0)
 
     # Step 2: Map QIDs to Wikipedia page_ids
     geo_pages = step2_page_props(wikidata, args.test)

@@ -9,9 +9,36 @@ env:
   TIPPECANOE_REF: cb6cacef152e649d4500af1f4fa9b4c8f1f98d64  # post-2.79.0: includes --drop-by-attribute-as-needed
 
 jobs:
-  build:
+  extract-wikidata:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # max GH Actions timeout
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Extract Wikidata coordinates
+        run: uv run python scripts/extract.py --save-wikidata data/wikidata_cache.parquet
+        timeout-minutes: 330
+
+      - name: Upload Wikidata cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: wikidata-cache
+          path: data/wikidata_cache.parquet
+          retention-days: 1
+
+  build:
+    needs: extract-wikidata
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
     permissions:
       contents: write
 
@@ -54,11 +81,17 @@ jobs:
 
       - name: Download Wikipedia dumps
         run: make download
-        timeout-minutes: 360
+        timeout-minutes: 60
+
+      - name: Download Wikidata cache
+        uses: actions/download-artifact@v4
+        with:
+          name: wikidata-cache
+          path: data
 
       - name: Extract GeoParquet
-        run: make extract
-        timeout-minutes: 360
+        run: uv run python scripts/extract.py --load-wikidata data/wikidata_cache.parquet
+        timeout-minutes: 120
 
       - name: Build PMTiles
         run: make tiles TIPPECANOE=~/tippecanoe/tippecanoe
