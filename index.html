@@ -235,9 +235,23 @@
       }).join(" ");
     }
 
+    function formatPopulation(n) {
+      if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M pop`;
+      if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K pop`;
+      return `${n.toLocaleString()} pop`;
+    }
+
     function popupHtml(f) {
       const stats = [];
-      if (f.gt_type) stats.push(f.gt_type);
+      if (f.instance_of) stats.push(f.instance_of);
+      else if (f.gt_type) stats.push(f.gt_type);
+      // Suppress country if instance_of already names it ("municipality of Spain").
+      const instLc = (f.instance_of || "").toLowerCase();
+      const countryLc = (f.country || "").toLowerCase();
+      if (f.country && !(countryLc && instLc.includes(countryLc))) {
+        stats.push(f.country);
+      }
+      if (f.population != null) stats.push(formatPopulation(f.population));
       if (f.page_len) stats.push(`${(f.page_len / 1024).toFixed(1)} KB`);
       stats.push(`${f.inlink_count.toLocaleString()} inlinks`);
       if (f.elevation != null) stats.push(`elev ${f.elevation.toLocaleString()} m`);
@@ -257,7 +271,8 @@
         const conn = await db.connect();
         try {
           const r = (await conn.query(`
-            SELECT description, image_url, gt_type, page_len, elevation
+            SELECT description, image_url, gt_type, page_len, elevation,
+                   instance_of, country, population
             FROM '${PARQUET_URL}'
             WHERE page_id = ${Number(pageId)}
             LIMIT 1
@@ -268,6 +283,9 @@
             gt_type: r.gt_type != null ? String(r.gt_type) : "",
             page_len: r.page_len != null ? Number(r.page_len) : 0,
             elevation: r.elevation != null ? Number(r.elevation) : null,
+            instance_of: r.instance_of != null ? String(r.instance_of) : "",
+            country: r.country != null ? String(r.country) : "",
+            population: r.population != null ? Number(r.population) : null,
           } : {};
         } finally {
           await conn.close();
