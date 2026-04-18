@@ -1,12 +1,21 @@
 """
-Extract all geotagged Wikipedia articles from SQL dumps into GeoParquet.
+Extract geotagged Wikipedia articles using Wikidata coordinates + Wikipedia dumps.
 
-Streams these dumps from dumps.wikimedia.org (~12GB total):
-  - geo_tags:   coordinates for geotagged pages (~52MB)
-  - page:       page metadata — title, length (~2.4GB)
-  - page_props: lead images, Wikidata QIDs, descriptions (~1GB)
-  - linktarget: link target ID mappings (~1.4GB)
-  - pagelinks:  internal links for inlink counts (~6.9GB)
+Coordinates and enrichment come from the Wikidata truthy N-Triples dump (~70GB):
+  - P625:  coordinate location
+  - P31:   instance of (type classification)
+  - P17:   country
+  - P1082: population
+  - P1566: GeoNames ID
+  - P18:   image (fallback for page_image_free)
+  - P6802: related images
+
+Article metadata comes from Wikipedia SQL dumps (~12GB):
+  - page_props: QID→page_id mapping, lead images, descriptions
+  - geo_tags:   supplementary gt_type classification
+  - page:       titles, page lengths; filters redirects
+  - linktarget: link target ID mappings
+  - pagelinks:  inbound link counts
 
 Outputs a Hilbert-sorted GeoParquet 1.1 file with bbox covering metadata.
 Use --test to validate with a small subset first.
@@ -14,14 +23,17 @@ Use --test to validate with a small subset first.
 
 import argparse
 import gzip
+import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.request
 
 sys.stdout.reconfigure(line_buffering=True)
 
+WIKIDATA_NT_URL = "https://dumps.wikimedia.org/wikidatawiki/entities/latest-truthy.nt.gz"
 DUMP_BASE_URL = "https://dumps.wikimedia.org/enwiki/latest"
 DUMP_LOCAL_DIR = "data/dumps"
 OUTPUT_FILE = "data/wikipedia_geotagged.parquet"
@@ -36,6 +48,16 @@ DUMP_FILES = {
     "linktarget": "enwiki-latest-linktarget.sql.gz",
     "pagelinks":  "enwiki-latest-pagelinks.sql.gz",
 }
+
+# Properties to extract from the Wikidata truthy N-Triples dump
+WIKIDATA_PROPERTIES = ["P625", "P31", "P17", "P1082", "P1566", "P18", "P6802"]
+
+# Regex to parse NT triples: <entity/QID> <prop/direct/PID> object .
+_NT_RE = re.compile(
+    rb'<http://www\.wikidata\.org/entity/(Q\d+)> '
+    rb'<http://www\.wikidata\.org/prop/direct/(P\d+)> '
+    rb'(.+?) \.\s*$'
+)
 
 
 # ── MySQL dump parser ─────────────────────────────────────────
@@ -160,78 +182,381 @@ def stream_dump(name, table_name, max_insert_lines=None):
     gz.close()
 
 
+# ── Wikidata N-Triples processing ────────────────────────────
+
+def _parse_nt_value(raw_bytes, prop):
+    """Parse an N-Triples object value based on the property type."""
+    raw = raw_bytes.decode("utf-8", errors="replace")
+
+    if prop == "P625":
+        # Format: "Point(lon lat)"^^geo:wktLiteral — default globe is Earth.
+        # Non-Earth coords have a globe URI prefix:
+        #   "<http://www.wikidata.org/entity/Q405> Point(...)"^^geo:wktLiteral
+        # Only Q2 (Earth) is acceptable; reject Moon/Mars/etc. so they don't
+        # get plotted on Earth at bogus locations.
+        m = re.search(r'"(?:<([^>]+)>\s+)?Point\(([^ ]+) ([^)]+)\)"', raw)
+        if not m:
+            return None
+        globe = m.group(1)
+        if globe and not globe.endswith("/entity/Q2"):
+            return None
+        lon, lat = float(m.group(2)), float(m.group(3))
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return (lat, lon)
+        return None
+
+    if prop in ("P31", "P17"):
+        m = re.search(r'entity/(Q\d+)', raw)
+        return m.group(1) if m else None
+
+    if prop == "P1082":
+        m = re.search(r'"([+-]?\d+)', raw)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return None
+        return None
+
+    if prop == "P1566":
+        m = re.search(r'"([^"]+)"', raw)
+        return m.group(1) if m else None
+
+    if prop in ("P18", "P6802"):
+        m = re.search(r'<(http[^>]+)>', raw)
+        if not m:
+            return None
+        # RDF dump serves http:// Commons URLs; force https to avoid
+        # mixed-content blocking when loaded from HTTPS pages.
+        return m.group(1).replace("http://", "https://", 1)
+
+    return None
+
+
+def step1_wikidata(test_mode):
+    """Extract P625 coordinates + enrichment from Wikidata truthy N-Triples."""
+    print("\n→ Step 1/6: Streaming Wikidata truthy N-Triples dump...")
+
+    grep_pattern = "|".join(f"/direct/{p}>" for p in WIKIDATA_PROPERTIES)
+
+    # curl uses --fail so HTTP errors exit non-zero; pipefail propagates any
+    # stage's failure so a truncated download surfaces as a non-zero exit code
+    # instead of silently succeeding via grep's 0 status on partial input.
+    if test_mode:
+        cmd = (
+            f'curl -sSL --fail --retry 3 --retry-delay 5 '
+            f'-H "User-Agent: {USER_AGENT}" "{WIKIDATA_NT_URL}" '
+            f'| gunzip '
+            f'| head -5000000 '
+            f'| grep -E "{grep_pattern}"'
+        )
+        print(f"  ** TEST MODE — first 5M lines only **")
+    else:
+        cmd = (
+            f'curl -sSL --fail --retry 3 --retry-delay 5 '
+            f'-H "User-Agent: {USER_AGENT}" "{WIKIDATA_NT_URL}" '
+            f'| gunzip '
+            f'| grep -E "{grep_pattern}"'
+        )
+
+    print(f"  URL: {WIKIDATA_NT_URL}")
+    print(f"  Properties: {', '.join(WIKIDATA_PROPERTIES)}")
+
+    # Triples in the NT dump are grouped by entity, so we buffer the current
+    # entity's properties and only commit to `wikidata` at the entity boundary
+    # if P625 was seen. Without this, ~32M entities (P31/P17/etc. but no P625)
+    # would accumulate in memory and be discarded at the end — causing GC
+    # pressure that degrades throughput by 3x on GH Actions runners.
+    wikidata = {}
+    buffer = {}
+    current_qid = None
+    total = 0
+    start = time.time()
+
+    # Invoke via bash -o pipefail so a failure in any pipeline stage (curl
+    # disconnect, gunzip error) surfaces as a non-zero exit, instead of grep
+    # reporting success on a truncated stream.
+    proc = subprocess.Popen(
+        ["bash", "-o", "pipefail", "-c", cmd],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    for line in proc.stdout:
+        m = _NT_RE.match(line)
+        if not m:
+            continue
+
+        qid = m.group(1).decode()
+        prop = m.group(2).decode()
+        value = _parse_nt_value(m.group(3), prop)
+
+        if value is None:
+            continue
+
+        total += 1
+
+        # Entity transition: commit the previous entity if it had P625.
+        if qid != current_qid:
+            if current_qid is not None and "lat" in buffer:
+                wikidata[current_qid] = buffer
+            buffer = {}
+            current_qid = qid
+
+        if prop == "P625":
+            buffer["lat"], buffer["lon"] = value
+        elif prop == "P31" and "instance_of" not in buffer:
+            buffer["instance_of"] = value
+        elif prop == "P17" and "country" not in buffer:
+            buffer["country"] = value
+        elif prop == "P1082":
+            buffer["population"] = value
+        elif prop == "P1566":
+            buffer["geonames_id"] = value
+        elif prop == "P18":
+            buffer["p18_image"] = value
+        elif prop == "P6802":
+            buffer.setdefault("related_images", []).append(value)
+
+        if total % 500_000 == 0:
+            print(f"  ...{total:,} triples, {len(wikidata):,} items with P625")
+
+    # Commit final buffered entity
+    if current_qid is not None and "lat" in buffer:
+        wikidata[current_qid] = buffer
+
+    returncode = proc.wait()
+    # In test mode the `head` stage deliberately closes the pipe early, which
+    # propagates SIGPIPE up to curl and yields a non-zero exit — expected, not
+    # a real failure. In production any non-zero exit means a truncated stream.
+    if returncode != 0 and not test_mode:
+        stderr = proc.stderr.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Wikidata NT dump pipeline exited with code {returncode} — "
+            f"refusing to publish a truncated dataset. stderr: {stderr.strip()}"
+        )
+
+    elapsed = time.time() - start
+    print(f"  Processed {total:,} triples in {elapsed / 60:.1f} minutes")
+    print(f"  {len(wikidata):,} items with P625 coordinates")
+
+    return wikidata
+
+
+def _resolve_qid_labels(entries):
+    """Resolve P31 and P17 QIDs to human-readable labels via Wikidata API.
+
+    Called after page_props filtering so we only resolve QIDs for items that
+    actually survive into the output — avoids unnecessary API calls and
+    avoids failing the build on missing labels for QIDs that would have been
+    filtered out anyway.
+    """
+    print("\n→ Resolving instance_of/country labels from Wikidata API...")
+    start = time.time()
+
+    qids_to_resolve = set()
+    for v in entries.values():
+        if v.get("instance_of"):
+            qids_to_resolve.add(v["instance_of"])
+        if v.get("country"):
+            qids_to_resolve.add(v["country"])
+
+    if not qids_to_resolve:
+        print("  No QIDs to resolve")
+        return
+
+    print(f"  {len(qids_to_resolve):,} unique QIDs to resolve")
+
+    labels = {}
+    qid_list = sorted(qids_to_resolve)
+    batch_size = 50
+
+    for i in range(0, len(qid_list), batch_size):
+        batch = qid_list[i:i + batch_size]
+        ids = "|".join(batch)
+        url = (
+            "https://www.wikidata.org/w/api.php?action=wbgetentities"
+            f"&ids={ids}&props=labels&languages=en&format=json"
+        )
+        # Retry with exponential backoff for transient failures.
+        last_err = None
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                resp = urllib.request.urlopen(req, timeout=30)
+                data = json.loads(resp.read())
+                for qid, entity in data.get("entities", {}).items():
+                    label = entity.get("labels", {}).get("en", {}).get("value")
+                    if label:
+                        labels[qid] = label
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < 3:
+                    time.sleep(2 ** attempt)
+        if last_err is not None:
+            raise RuntimeError(
+                f"Wikidata label resolution failed for batch "
+                f"{i // batch_size + 1} after 4 attempts — refusing to "
+                f"publish data with raw Q-IDs. Last error: {last_err}"
+            ) from last_err
+
+        if i > 0 and (i // batch_size) % 20 == 0:
+            print(f"  ...resolved {len(labels):,}/{len(qids_to_resolve):,}")
+
+    elapsed = time.time() - start
+    print(f"  Resolved {len(labels):,} labels ({elapsed / 60:.1f}m)")
+
+    unresolved = qids_to_resolve - set(labels)
+    if unresolved:
+        print(f"  {len(unresolved):,} QIDs have no English label; dropping those values")
+
+    for v in entries.values():
+        qid = v.get("instance_of", "")
+        if qid:
+            v["instance_of"] = labels.get(qid, "")
+        qid = v.get("country", "")
+        if qid:
+            v["country"] = labels.get(qid, "")
+
+
 # ── Processing steps ──────────────────────────────────────────
 
-def step1_geo_tags(test_mode):
-    """Extract all geotagged pages on Earth."""
-    print("\n→ Step 1/5: Streaming geo_tags (~52MB)...")
-    geo_pages = {}
+def step2_page_props(wikidata, test_mode):
+    """Map QID→page_id via page_props; collect images and descriptions."""
+    print(f"\n→ Step 2/6: Streaming page_props (~1GB)...")
+    start = time.time()
     total = 0
+    target_props = {'page_image_free', 'wikibase_item', 'wikibase-shortdesc'}
+    limit = 500 if test_mode else None
+
+    page_qids = {}
+    page_images = {}
+    page_descs = {}
+
+    for t in stream_dump("page_props", "page_props", max_insert_lines=limit):
+        total += 1
+        if len(t) < 3:
+            continue
+
+        page_id = t[0]
+        propname = t[1]
+
+        if propname not in target_props:
+            continue
+
+        value = t[2] or ""
+        if propname == 'wikibase_item' and value:
+            page_qids[page_id] = value
+        elif propname == 'page_image_free' and value:
+            page_images[page_id] = value
+        elif propname == 'wikibase-shortdesc' and value:
+            page_descs[page_id] = value
+
+    # Build geo_pages for pages whose QID has P625 in Wikidata
+    geo_pages = {}
+    for page_id, qid in page_qids.items():
+        if qid not in wikidata:
+            continue
+
+        wd = wikidata[qid]
+        image_file = page_images.get(page_id, "")
+
+        # page_image_free as primary image, P18 as fallback
+        if image_file:
+            image_url = (
+                "https://commons.wikimedia.org/wiki/Special:FilePath/"
+                + image_file.replace(" ", "_")
+            )
+        elif wd.get("p18_image"):
+            image_url = wd["p18_image"]
+        else:
+            image_url = ""
+
+        geo_pages[page_id] = {
+            "lat": wd["lat"],
+            "lon": wd["lon"],
+            "qid": qid,
+            "instance_of": wd.get("instance_of", ""),
+            "country": wd.get("country", ""),
+            "population": wd.get("population"),
+            "geonames_id": wd.get("geonames_id", ""),
+            "image_url": image_url,
+            "related_images": wd.get("related_images", []),
+            "description": page_descs.get(page_id, ""),
+        }
+
+    with_image = sum(1 for p in geo_pages.values() if p["image_url"])
+    with_desc = sum(1 for p in geo_pages.values() if p["description"])
+    elapsed = time.time() - start
+    print(f"  Scanned {total:,} page_props → {len(geo_pages):,} pages with Wikidata P625 ({elapsed / 60:.1f}m)")
+    print(f"  With images: {with_image:,}, with descriptions: {with_desc:,}")
+
+    return geo_pages
+
+
+def step3_geo_tags(geo_pages, test_mode):
+    """Get supplementary gt_type from geo_tags.
+
+    Pages can have multiple geo_tags entries; prefer the primary Earth coord
+    so that multi-coord articles get the type describing the article's main
+    location rather than an incidental secondary tag.
+    """
+    print(f"\n→ Step 3/6: Streaming geo_tags for gt_type (~52MB)...")
+    start = time.time()
+    total = 0
+    matched = 0
     limit = 50 if test_mode else None
 
     for t in stream_dump("geo_tags", "geo_tags", max_insert_lines=limit):
         total += 1
-        # Columns:
-        #   0: gt_id, 1: gt_page_id, 2: gt_globe, 3: gt_primary,
-        #   4: gt_lat, 5: gt_lon, 6: gt_dim, 7: gt_type,
-        #   8: gt_name, 9: gt_country, 10: gt_region
-        if len(t) < 6:
+        # Columns: 0:gt_id, 1:gt_page_id, 2:gt_globe, 3:gt_primary,
+        # 4:gt_lat, 5:gt_lon, 6:gt_dim, 7:gt_type
+        if len(t) < 8:
             continue
 
         page_id = t[1]
-        globe = t[2]
-        primary = t[3]
-        lat = t[4]
-        lon = t[5]
-        gt_type = t[7] if len(t) > 7 else ""
-
-        # Filter: earth coordinates with valid ranges
-        if globe != 'earth':
-            continue
-        if not (isinstance(lat, (int, float)) and isinstance(lon, (int, float))):
-            continue
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        if page_id not in geo_pages:
             continue
 
-        # Prefer primary coords; accept non-primary if it's the only entry
-        if page_id in geo_pages:
-            if geo_pages[page_id]["gt_primary"]:
-                continue  # already have a primary coord, skip
-            if primary == 1:
-                # upgrade to primary
-                geo_pages[page_id] = {
-                    "lat": float(lat),
-                    "lon": float(lon),
-                    "gt_type": gt_type or "",
-                    "gt_primary": True,
-                }
-        else:
-            geo_pages[page_id] = {
-                "lat": float(lat),
-                "lon": float(lon),
-                "gt_type": gt_type or "",
-                "gt_primary": primary == 1,
-            }
+        if t[2] != 'earth':
+            continue
 
-    primary_count = sum(1 for p in geo_pages.values() if p["gt_primary"])
-    print(f"  Scanned {total:,} geo_tags → {len(geo_pages):,} pages ({primary_count:,} primary, {len(geo_pages) - primary_count:,} non-primary)")
-    return geo_pages
+        gt_type = t[7] or ""
+        if not gt_type:
+            continue
+
+        is_primary = t[3] == 1
+        existing = geo_pages[page_id].get("_gt_type_primary")
+
+        # Take first value; upgrade to primary if we later see one.
+        if existing is None:
+            geo_pages[page_id]["gt_type"] = gt_type
+            geo_pages[page_id]["_gt_type_primary"] = is_primary
+            matched += 1
+        elif is_primary and not existing:
+            geo_pages[page_id]["gt_type"] = gt_type
+            geo_pages[page_id]["_gt_type_primary"] = True
+
+    # Drop the internal tracking key
+    for info in geo_pages.values():
+        info.pop("_gt_type_primary", None)
+
+    elapsed = time.time() - start
+    print(f"  Scanned {total:,} geo_tags → {matched:,} pages got gt_type ({elapsed / 60:.1f}m)")
 
 
-def step2_page(geo_pages, test_mode):
+def step4_page(geo_pages, test_mode):
     """Get page titles, lengths; filter out redirects and non-articles."""
-    print(f"\n→ Step 2/5: Streaming page (~2.4GB)...")
+    print(f"\n→ Step 4/6: Streaming page (~2.4GB)...")
+    start = time.time()
     matched = 0
     total = 0
     limit = 500 if test_mode else None
 
     for t in stream_dump("page", "page", max_insert_lines=limit):
         total += 1
-        # Columns:
-        #   0: page_id, 1: page_namespace, 2: page_title,
-        #   3: page_is_redirect, 4: page_is_new, 5: page_random,
-        #   6: page_touched, 7: page_links_updated, 8: page_latest,
-        #   9: page_len, 10: page_content_model, 11: page_lang
         if len(t) < 10:
             continue
 
@@ -250,20 +575,6 @@ def step2_page(geo_pages, test_mode):
         title = t[2]
         page_len = t[9]
 
-        # Drop catalog/list articles *only when their coord is non-primary*.
-        # The gt_primary flag neatly separates "Timeline of Pittsburgh"
-        # (primary, about the city) from "Timeline of the Syrian civil war"
-        # (non-primary, an event pinned to some incidental location). Same
-        # for "List of counties in Colorado" (primary, about Colorado) vs
-        # "List of shipwrecks in 1906" (non-primary event catalog).
-        # Titles here still have underscores (Wikipedia's internal format).
-        if (not geo_pages[page_id]["gt_primary"] and (
-                title.startswith("List_of_")
-                or title.startswith("Listed_buildings_")
-                or title.startswith("Timeline_of_"))):
-            del geo_pages[page_id]
-            continue
-
         geo_pages[page_id]["title"] = title
         geo_pages[page_id]["page_len"] = int(page_len) if page_len else 0
         matched += 1
@@ -276,85 +587,88 @@ def step2_page(geo_pages, test_mode):
     for pid in to_remove:
         del geo_pages[pid]
 
-    print(f"  Scanned {total:,} pages → {len(geo_pages):,} articles matched")
+    elapsed = time.time() - start
+    print(f"  Scanned {total:,} pages → {len(geo_pages):,} articles matched ({elapsed / 60:.1f}m)")
 
 
-def step3_page_props(geo_pages, test_mode):
-    """Get lead images, Wikidata QIDs, and short descriptions."""
-    print(f"\n→ Step 3/5: Streaming page_props (~1GB)...")
-    total = 0
-    target_props = {'page_image_free', 'wikibase_item', 'wikibase-shortdesc'}
-    limit = 500 if test_mode else None
-
-    for t in stream_dump("page_props", "page_props", max_insert_lines=limit):
-        total += 1
-        # Columns: pp_page, pp_propname, pp_value, pp_sortkey
-        if len(t) < 3:
-            continue
-
-        page_id = t[0]
-        propname = t[1]
-
-        if page_id not in geo_pages or propname not in target_props:
-            continue
-
-        value = t[2] or ""
-        if propname == 'page_image_free' and value:
-            geo_pages[page_id]["image"] = value
-        elif propname == 'wikibase_item' and value:
-            geo_pages[page_id]["qid"] = value
-        elif propname == 'wikibase-shortdesc' and value:
-            geo_pages[page_id]["description"] = value
-
-    images = sum(1 for p in geo_pages.values() if "image" in p)
-    qids = sum(1 for p in geo_pages.values() if "qid" in p)
-    descs = sum(1 for p in geo_pages.values() if "description" in p)
-    print(f"  Found {images:,} images, {qids:,} QIDs, {descs:,} descriptions")
+# Match `(id,0,'title')` linktarget rows where ns=0. The title capture allows
+# backslash-escape sequences since MediaWiki SQL dumps escape special chars.
+# Skipping non-ns=0 tuples this way avoids parsing ~90% of the dump.
+_LT_NS0_RE = re.compile(rb"\((\d+),0,'((?:[^'\\]|\\.)*)'\)")
 
 
-def step4_linktarget(geo_pages, test_mode):
+def step5_linktarget(geo_pages, test_mode):
     """Map page titles to linktarget IDs (needed for pagelinks lookup)."""
-    print(f"\n→ Step 4/5: Streaming linktarget (~1.4GB)...")
+    print(f"\n→ Step 5/6: Streaming linktarget (~1.4GB)...")
+    start = time.time()
 
-    # Build title → page_id lookup
-    title_to_pid = {}
+    # Re-encode titles as their raw SQL-dump byte form so we can match
+    # against linktarget bytes directly, skipping per-row UTF-8 decode.
+    # Order matters: escape backslash first, then the quote chars it could
+    # produce. MediaWiki titles don't contain control chars in practice.
+    title_bytes_to_pid = {}
     for pid, info in geo_pages.items():
         title = info.get("title", "")
         if title:
-            title_to_pid[title] = pid
+            escaped = (title.replace("\\", "\\\\")
+                            .replace("'", "\\'")
+                            .replace('"', '\\"'))
+            title_bytes_to_pid[escaped.encode("utf-8")] = pid
+
+    filename = DUMP_FILES["linktarget"]
+    local_path = os.path.join(DUMP_LOCAL_DIR, filename)
+    if os.path.exists(local_path):
+        print(f"  Reading local: {local_path}")
+        gz = gzip.open(local_path, 'rb')
+    else:
+        url = f"{DUMP_BASE_URL}/{filename}"
+        print(f"  Streaming: {url}")
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        resp = urllib.request.urlopen(req)
+        gz = gzip.GzipFile(fileobj=resp)
 
     lt_id_to_pid = {}
-    total = 0
+    insert_lines = 0
+    matched_ns0 = 0
     limit = 500 if test_mode else None
 
-    for t in stream_dump("linktarget", "linktarget", max_insert_lines=limit):
-        total += 1
-        # Columns: lt_id, lt_namespace, lt_title
-        if len(t) < 3:
+    for line in gz:
+        if not line.startswith(b'INSERT'):
             continue
+        insert_lines += 1
+        if limit and insert_lines > limit:
+            break
 
-        lt_ns = t[1]
-        if lt_ns != 0:
-            continue
+        for m in _LT_NS0_RE.finditer(line):
+            matched_ns0 += 1
+            pid = title_bytes_to_pid.get(m.group(2))
+            if pid is not None:
+                lt_id_to_pid[int(m.group(1))] = pid
 
-        lt_title = t[2]
-        if lt_title in title_to_pid:
-            lt_id_to_pid[t[0]] = title_to_pid[lt_title]
+        if insert_lines % 500 == 0:
+            print(f"  ...{insert_lines:,} INSERT lines, "
+                  f"{matched_ns0:,} ns=0 rows, {len(lt_id_to_pid):,} mapped")
 
-        if total % 1_000_000 == 0:
-            print(f"  ...scanned {total:,} targets, mapped {len(lt_id_to_pid):,}")
+    gz.close()
 
-    print(f"  Scanned {total:,} linktargets → mapped {len(lt_id_to_pid):,} to geo pages")
+    elapsed = time.time() - start
+    print(f"  Scanned {insert_lines:,} INSERT lines, {matched_ns0:,} ns=0 rows "
+          f"→ mapped {len(lt_id_to_pid):,} to geo pages ({elapsed / 60:.1f}m)")
     return lt_id_to_pid
 
 
-def step5_pagelinks(geo_pages, lt_id_to_pid, test_mode):
+def step6_pagelinks(geo_pages, lt_id_to_pid, test_mode):
     """Count inbound article links for each geo page."""
-    print(f"\n→ Step 5/5: Streaming pagelinks (~6.9GB)...")
+    print(f"\n→ Step 6/6: Streaming pagelinks (~6.9GB)...")
+    start = time.time()
 
-    # Fast regex for integer-only pagelinks tuples — runs in C, not Python.
-    # Matches (pl_from, 0, pl_target_id) — namespace 0 only.
     _NS0_RE = re.compile(rb'\(\d+,0,(\d+)\)')
+    # Regex groups are bytes already; keep the hot-path lookup in bytes form
+    # so we avoid int() conversion for every namespace-0 pagelink candidate.
+    target_id_bytes_to_pid = {
+        str(target_id).encode("ascii"): pid
+        for target_id, pid in lt_id_to_pid.items()
+    }
 
     inlink_counts = {}
     lines = 0
@@ -385,9 +699,8 @@ def step5_pagelinks(geo_pages, lt_id_to_pid, test_mode):
 
         lines += 1
         for m in _NS0_RE.finditer(line_bytes):
-            target_id = int(m.group(1))
-            if target_id in lt_id_to_pid:
-                pid = lt_id_to_pid[target_id]
+            pid = target_id_bytes_to_pid.get(m.group(1))
+            if pid is not None:
                 inlink_counts[pid] = inlink_counts.get(pid, 0) + 1
                 hits += 1
 
@@ -396,12 +709,13 @@ def step5_pagelinks(geo_pages, lt_id_to_pid, test_mode):
 
     gz.close()
 
-    # Store counts
     for pid, count in inlink_counts.items():
         geo_pages[pid]["inlink_count"] = count
 
     with_inlinks = sum(1 for p in geo_pages.values() if p.get("inlink_count", 0) > 0)
-    print(f"  Scanned {lines:,} INSERT lines, {hits:,} hits → {with_inlinks:,} pages have inlinks")
+    elapsed = time.time() - start
+    print(f"  Scanned {lines:,} INSERT lines, {hits:,} hits → "
+          f"{with_inlinks:,} pages have inlinks ({elapsed / 60:.1f}m)")
 
 
 # ── Elevation lookup ──────────────────────────────────────────
@@ -431,7 +745,7 @@ def sample_elevations(rows):
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # Group row indices by tile
+    start = time.time()
     tile_groups = defaultdict(list)
     for i, r in enumerate(rows):
         key, tile_name = _cop_dem_tile_key(r["latitude"], r["longitude"])
@@ -439,7 +753,6 @@ def sample_elevations(rows):
 
     print(f"  {len(rows):,} points across {len(tile_groups):,} tiles")
 
-    # Configure GDAL for efficient COG access
     gdal_env = rasterio.Env(
         GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
         GDAL_HTTP_MULTIPLEX="YES",
@@ -450,18 +763,10 @@ def sample_elevations(rows):
     )
 
     def _fetch_tile(tile_name, indices):
-        """Fetch elevation for all points in a single tile."""
         url = f"{COP_DEM_BASE}/{tile_name}/{tile_name}.tif"
         results = {}
         try:
             with rasterio.open(url) as src:
-                # Nudge integer-boundary coords ~100 m into the tile.
-                # Wikipedia often tags countries/regions with exact integer
-                # lat/lon (e.g. Mexico at 23°N, 102°W), and Copernicus DEM
-                # tiles are 1°×1° at integer boundaries — sampling the exact
-                # SW corner lands on the pixel grid edge and rasterio returns
-                # nodata/0. Shifting 0.001° inward keeps us in the same tile
-                # (math.floor picks the same one) but lands on a real pixel.
                 def _nudge(v):
                     return v + 0.001 if v == int(v) else v
                 coords = [
@@ -493,7 +798,6 @@ def sample_elevations(rows):
                         sampled += 1
 
                 done_tiles += 1
-                # Check if this tile had all zeros (missing/ocean)
                 if all(v == 0 for v in results.values()):
                     failed_tiles += 1
 
@@ -501,12 +805,62 @@ def sample_elevations(rows):
                     print(f"  ...{done_tiles:,}/{len(tile_groups):,} tiles, "
                           f"{sampled:,} points sampled")
 
+    elapsed = time.time() - start
     print(f"  Sampled {len(rows) - failed_tiles:,} points from "
           f"{done_tiles - failed_tiles:,} tiles "
-          f"({failed_tiles:,} missing/ocean tiles → elevation 0)")
+          f"({failed_tiles:,} missing/ocean tiles → elevation 0) ({elapsed / 60:.1f}m)")
 
 
 # ── Main ──────────────────────────────────────────────────────
+
+def _save_wikidata_cache(wikidata, path):
+    """Save the wikidata dict to parquet for cross-job caching."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    qids = sorted(wikidata.keys())
+    table = pa.table({
+        "qid": pa.array(qids, type=pa.string()),
+        "lat": pa.array([wikidata[q]["lat"] for q in qids], type=pa.float64()),
+        "lon": pa.array([wikidata[q]["lon"] for q in qids], type=pa.float64()),
+        "instance_of": pa.array([wikidata[q].get("instance_of", "") for q in qids], type=pa.string()),
+        "country": pa.array([wikidata[q].get("country", "") for q in qids], type=pa.string()),
+        "population": pa.array([wikidata[q].get("population") for q in qids], type=pa.int64()),
+        "geonames_id": pa.array([wikidata[q].get("geonames_id", "") for q in qids], type=pa.string()),
+        "p18_image": pa.array([wikidata[q].get("p18_image", "") for q in qids], type=pa.string()),
+        "related_images": pa.array([wikidata[q].get("related_images", []) for q in qids],
+                                   type=pa.list_(pa.string())),
+    })
+    pq.write_table(table, path, compression="zstd")
+    del table
+    print(f"  Saved {len(qids):,} items to {path} ({os.path.getsize(path) / 1048576:.0f} MiB)")
+
+
+def _load_wikidata_cache(path):
+    """Load the wikidata dict from a cached parquet file."""
+    import pyarrow.parquet as pq
+
+    print(f"\n→ Loading cached Wikidata from {path}...")
+    table = pq.read_table(path)
+    wikidata = {}
+    for i in range(len(table)):
+        qid = table["qid"][i].as_py()
+        entry = {"lat": table["lat"][i].as_py(), "lon": table["lon"][i].as_py()}
+        for col in ("instance_of", "country", "geonames_id", "p18_image"):
+            v = table[col][i].as_py()
+            if v:
+                entry[col] = v
+        pop = table["population"][i].as_py()
+        if pop is not None:
+            entry["population"] = pop
+        imgs = table["related_images"][i].as_py()
+        if imgs:
+            entry["related_images"] = imgs
+        wikidata[qid] = entry
+    del table
+    print(f"  Loaded {len(wikidata):,} items with P625 coordinates")
+    return wikidata
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -514,28 +868,55 @@ def main():
     )
     parser.add_argument("--test", action="store_true",
                         help="Test mode: process small subset of each dump")
+    parser.add_argument("--save-wikidata",
+                        help="Run step 1 only, save result to parquet, then exit")
+    parser.add_argument("--load-wikidata",
+                        help="Skip step 1, load wikidata from cached parquet")
     args = parser.parse_args()
 
     os.makedirs("data", exist_ok=True)
 
     print("=" * 60)
-    print("wiki-geoparquet — Extract from Wikipedia SQL Dumps")
+    print("wiki-geoparquet — Extract from Wikidata + Wikipedia Dumps")
     if args.test:
         print("** TEST MODE — small subset only **")
     print("=" * 60)
 
     start = time.time()
 
-    # Process dumps sequentially (each builds on previous state)
-    geo_pages = step1_geo_tags(args.test)
-    if not geo_pages:
-        print("ERROR: No geotagged pages found!")
+    # Step 1: Wikidata coordinates + enrichment
+    if args.load_wikidata:
+        wikidata = _load_wikidata_cache(args.load_wikidata)
+    else:
+        wikidata = step1_wikidata(args.test)
+    if not wikidata:
+        print("ERROR: No Wikidata coordinates found!")
         sys.exit(1)
 
-    step2_page(geo_pages, args.test)
-    step3_page_props(geo_pages, args.test)
-    lt_id_to_pid = step4_linktarget(geo_pages, args.test)
-    step5_pagelinks(geo_pages, lt_id_to_pid, args.test)
+    if args.save_wikidata:
+        _save_wikidata_cache(wikidata, args.save_wikidata)
+        elapsed = time.time() - start
+        print(f"\nStep 1 complete in {elapsed / 60:.1f} minutes — exiting.")
+        sys.exit(0)
+
+    # Step 2: Map QIDs to Wikipedia page_ids
+    geo_pages = step2_page_props(wikidata, args.test)
+    del wikidata
+
+    if not geo_pages:
+        print("ERROR: No pages matched Wikidata coordinates!")
+        sys.exit(1)
+
+    # Resolve QID labels only for items that survived the enwiki join —
+    # avoids wasted API calls and false failures on QIDs that would be
+    # filtered out anyway.
+    _resolve_qid_labels(geo_pages)
+
+    # Steps 3-6: Wikipedia dump enrichment
+    step3_geo_tags(geo_pages, args.test)
+    step4_page(geo_pages, args.test)
+    lt_id_to_pid = step5_linktarget(geo_pages, args.test)
+    step6_pagelinks(geo_pages, lt_id_to_pid, args.test)
 
     # ── Assemble rows ───────────────────────────────────────
     print(f"\n→ Assembling output...")
@@ -545,27 +926,23 @@ def main():
         if not title:
             continue
 
-        image_file = info.get("image", "")
-        image_url = ""
-        if image_file:
-            image_url = (
-                "https://commons.wikimedia.org/wiki/Special:FilePath/"
-                + image_file.replace(" ", "_")
-            )
-
         rows.append({
             "page_id": pid,
             "qid": info.get("qid", ""),
             "label": title.replace("_", " "),
             "description": info.get("description", ""),
+            "instance_of": info.get("instance_of", ""),
+            "country": info.get("country", ""),
+            "population": info.get("population"),
+            "geonames_id": info.get("geonames_id", ""),
             "latitude": info["lat"],
             "longitude": info["lon"],
             "gt_type": info.get("gt_type", ""),
             "page_len": info.get("page_len", 0),
             "inlink_count": info.get("inlink_count", 0),
-            "gt_primary": info.get("gt_primary", True),
             "wikipedia_url": "https://en.wikipedia.org/wiki/" + title,
-            "image_url": image_url,
+            "image_url": info.get("image_url", ""),
+            "related_images": info.get("related_images", []),
         })
 
     # ── Sample elevation ──────────────────────────────────
@@ -583,16 +960,24 @@ def main():
 
     # Stats
     with_image = sum(1 for r in rows if r["image_url"])
-    with_qid = sum(1 for r in rows if r["qid"])
     with_inlinks = sum(1 for r in rows if r["inlink_count"] > 0)
+    with_instance = sum(1 for r in rows if r["instance_of"])
+    with_country = sum(1 for r in rows if r["country"])
+    with_pop = sum(1 for r in rows if r["population"] is not None)
+    with_geonames = sum(1 for r in rows if r["geonames_id"])
+    with_related = sum(1 for r in rows if r["related_images"])
     avg_len = sum(r["page_len"] for r in rows) / len(rows)
     avg_inlinks = sum(r["inlink_count"] for r in rows) / len(rows)
 
-    print(f"  With images:  {with_image:,} ({100 * with_image / len(rows):.0f}%)")
-    print(f"  With QIDs:    {with_qid:,}")
-    print(f"  With inlinks: {with_inlinks:,}")
-    print(f"  Avg page_len: {avg_len:,.0f} bytes")
-    print(f"  Avg inlinks:  {avg_inlinks:,.0f}")
+    print(f"  With images:      {with_image:,} ({100 * with_image / len(rows):.0f}%)")
+    print(f"  With instance_of: {with_instance:,} ({100 * with_instance / len(rows):.0f}%)")
+    print(f"  With country:     {with_country:,} ({100 * with_country / len(rows):.0f}%)")
+    print(f"  With population:  {with_pop:,} ({100 * with_pop / len(rows):.0f}%)")
+    print(f"  With GeoNames ID: {with_geonames:,} ({100 * with_geonames / len(rows):.0f}%)")
+    print(f"  With related img: {with_related:,} ({100 * with_related / len(rows):.0f}%)")
+    print(f"  With inlinks:     {with_inlinks:,}")
+    print(f"  Avg page_len:     {avg_len:,.0f} bytes")
+    print(f"  Avg inlinks:      {avg_inlinks:,.0f}")
 
     # ── DuckDB: write GeoParquet with geometry column ──
     print(f"\n→ Writing GeoParquet...")
@@ -607,15 +992,20 @@ def main():
         "qid": pa.array([r["qid"] for r in rows], type=pa.string()),
         "label": pa.array([r["label"] for r in rows], type=pa.string()),
         "description": pa.array([r["description"] for r in rows], type=pa.string()),
+        "instance_of": pa.array([r["instance_of"] for r in rows], type=pa.string()),
+        "country": pa.array([r["country"] for r in rows], type=pa.string()),
+        "population": pa.array([r["population"] for r in rows], type=pa.int64()),
+        "geonames_id": pa.array([r["geonames_id"] for r in rows], type=pa.string()),
         "latitude": pa.array([r["latitude"] for r in rows], type=pa.float64()),
         "longitude": pa.array([r["longitude"] for r in rows], type=pa.float64()),
         "elevation": pa.array([r["elevation"] for r in rows], type=pa.int16()),
         "gt_type": pa.array([r["gt_type"] for r in rows], type=pa.string()),
         "page_len": pa.array([r["page_len"] for r in rows], type=pa.int32()),
         "inlink_count": pa.array([r["inlink_count"] for r in rows], type=pa.int32()),
-        "gt_primary": pa.array([r["gt_primary"] for r in rows], type=pa.bool_()),
         "wikipedia_url": pa.array([r["wikipedia_url"] for r in rows], type=pa.string()),
         "image_url": pa.array([r["image_url"] for r in rows], type=pa.string()),
+        "related_images": pa.array([r["related_images"] for r in rows],
+                                   type=pa.list_(pa.string())),
     })
     del rows  # free memory
 
@@ -625,8 +1015,10 @@ def main():
         COPY (
             SELECT
                 ST_Point(longitude, latitude) AS geometry,
-                page_id, qid, label, description, elevation, gt_type,
-                page_len, inlink_count, gt_primary, wikipedia_url, image_url
+                page_id, qid, label, description, instance_of, country,
+                population, geonames_id, elevation, gt_type,
+                page_len, inlink_count, wikipedia_url, image_url,
+                related_images
             FROM raw
         ) TO '{OUTPUT_FILE}'
         WITH (FORMAT PARQUET, COMPRESSION ZSTD)
@@ -635,7 +1027,6 @@ def main():
 
     # Hilbert-sort + add bbox covering in one pass
     print(f"\n→ Hilbert-sorting with bbox covering...")
-    import subprocess
     subprocess.run(
         ["uv", "run", "gpio", "sort", "hilbert", "--add-bbox",
          OUTPUT_FILE, OUTPUT_FILE],

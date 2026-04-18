@@ -5,6 +5,7 @@ Validates the GeoParquet file for:
   - Row count within expected range
   - No null geometries, valid coordinate ranges
   - Inlink and page_len distribution sanity
+  - Wikidata enrichment coverage (instance_of, country, population)
   - gt_type coverage
   - Spot checks for well-known articles
   - GeoParquet metadata present
@@ -31,7 +32,7 @@ SPOT_CHECKS = [
     "Sydney Opera House",
 ]
 
-EXPECTED_ROW_RANGE = (400_000, 1_500_000)
+EXPECTED_ROW_RANGE = (400_000, 3_000_000)
 
 
 def main():
@@ -103,18 +104,65 @@ def main():
         """).fetchone()[0]
         check("bbox struct column exists", bbox_col > 0, "covering declared but bbox column missing")
 
-    # gt_type coverage
+    # Wikidata enrichment coverage
+    enrichment = db.execute(f"""
+        SELECT
+            count(*) FILTER (WHERE instance_of != ''),
+            count(*) FILTER (WHERE country != ''),
+            count(*) FILTER (WHERE population IS NOT NULL),
+            count(*) FILTER (WHERE geonames_id != '')
+        FROM '{PARQUET_FILE}'
+    """).fetchone()
+    with_instance, with_country, with_pop, with_geonames = enrichment
+
+    check("instance_of populated for >30%",
+          with_instance > n * 0.3,
+          f"only {with_instance:,} ({100 * with_instance / n:.0f}%)")
+    check("country populated for >30%",
+          with_country > n * 0.3,
+          f"only {with_country:,} ({100 * with_country / n:.0f}%)")
+
+    # Reject unresolved raw Q-IDs — label resolution must succeed for every value.
+    raw_qids = db.execute(f"""
+        SELECT
+            count(*) FILTER (WHERE instance_of ~ '^Q[0-9]+$'),
+            count(*) FILTER (WHERE country ~ '^Q[0-9]+$')
+        FROM '{PARQUET_FILE}'
+    """).fetchone()
+    raw_instance_qids, raw_country_qids = raw_qids
+    check("instance_of has no raw Q-IDs",
+          raw_instance_qids == 0,
+          f"{raw_instance_qids:,} rows contain unresolved Q-IDs")
+    check("country has no raw Q-IDs",
+          raw_country_qids == 0,
+          f"{raw_country_qids:,} rows contain unresolved Q-IDs")
+
+    print(f"\n  Wikidata enrichment:")
+    print(f"    instance_of: {with_instance:>8,} ({100 * with_instance / n:.0f}%)")
+    print(f"    country:     {with_country:>8,} ({100 * with_country / n:.0f}%)")
+    print(f"    population:  {with_pop:>8,} ({100 * with_pop / n:.0f}%)")
+    print(f"    geonames_id: {with_geonames:>8,} ({100 * with_geonames / n:.0f}%)")
+
+    # instance_of breakdown
+    instance_rows = db.execute(f"""
+        SELECT instance_of, count(*) AS cnt FROM '{PARQUET_FILE}'
+        WHERE instance_of != ''
+        GROUP BY instance_of ORDER BY cnt DESC
+    """).fetchall()
+    print(f"\n  instance_of breakdown (top 15):")
+    for inst, cnt in instance_rows[:15]:
+        print(f"    {inst:<30} {cnt:>8,} ({100 * cnt / n:.1f}%)")
+
+    # gt_type coverage (supplementary from geo_tags)
     gt_rows = db.execute(f"""
         SELECT gt_type, count(*) AS cnt FROM '{PARQUET_FILE}'
         GROUP BY gt_type ORDER BY cnt DESC
     """).fetchall()
     with_gt = sum(cnt for gt, cnt in gt_rows if gt)
-    check("gt_type populated for >30% of articles",
-          with_gt > n * 0.3,
-          f"only {with_gt:,} ({100 * with_gt / n:.0f}%)")
 
-    print(f"\n  gt_type breakdown (top 15):")
-    for gt, cnt in gt_rows[:15]:
+    print(f"\n  gt_type (supplementary, from geo_tags):")
+    print(f"    populated: {with_gt:,} ({100 * with_gt / n:.0f}%)")
+    for gt, cnt in gt_rows[:10]:
         print(f"    {gt or '(empty)':<20} {cnt:>8,} ({100 * cnt / n:.1f}%)")
 
     # Inlink distribution
@@ -161,7 +209,6 @@ def main():
           f"max elevation is {elev_max}")
     print(f"\n  Elevation: min {elev_min:,}m, max {elev_max:,}m, avg {elev_avg:,.0f}m")
 
-    # Spot-check known elevations (rough)
     machu_elev = db.execute(f"""
         SELECT elevation FROM '{PARQUET_FILE}' WHERE label = 'Machu Picchu'
     """).fetchone()
@@ -177,18 +224,20 @@ def main():
     print(f"\n  Page length: avg {page_stats[0]:,.0f} bytes, "
           f"max {page_stats[1]:,} bytes")
 
-    # QID and image coverage
+    # Image coverage
     coverage = db.execute(f"""
         SELECT
             count(*) FILTER (WHERE qid != ''),
-            count(*) FILTER (WHERE image_url != '')
+            count(*) FILTER (WHERE image_url != ''),
+            count(*) FILTER (WHERE len(related_images) > 0)
         FROM '{PARQUET_FILE}'
     """).fetchone()
-    with_qid, with_image = coverage
+    with_qid, with_image, with_related = coverage
     print(f"\n  Coverage:")
-    print(f"    With QID:    {with_qid:>8,} ({100 * with_qid / n:.0f}%)")
-    print(f"    With image:  {with_image:>8,} ({100 * with_image / n:.0f}%)")
-    print(f"    With inlinks:{with_inlinks:>8,} ({100 * with_inlinks / n:.0f}%)")
+    print(f"    With QID:           {with_qid:>8,} ({100 * with_qid / n:.0f}%)")
+    print(f"    With image:         {with_image:>8,} ({100 * with_image / n:.0f}%)")
+    print(f"    With related_images:{with_related:>8,} ({100 * with_related / n:.0f}%)")
+    print(f"    With inlinks:       {with_inlinks:>8,} ({100 * with_inlinks / n:.0f}%)")
 
     # Spot checks
     print(f"\n→ Spot checks:")
