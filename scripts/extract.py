@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -370,17 +371,20 @@ def _resolve_qid_labels(entries):
     labels = {}
     qid_list = sorted(qids_to_resolve)
     batch_size = 50
+    # Backoff schedule for transient errors. The Wikidata API rate-limits
+    # bursts aggressively; honor Retry-After when present and otherwise wait
+    # long enough that a brief 429 streak doesn't sink an entire 5h build.
+    backoff = [2, 5, 15, 45, 120, 300]
 
     for i in range(0, len(qid_list), batch_size):
         batch = qid_list[i:i + batch_size]
         ids = "|".join(batch)
         url = (
             "https://www.wikidata.org/w/api.php?action=wbgetentities"
-            f"&ids={ids}&props=labels&languages=en&format=json"
+            f"&ids={ids}&props=labels&languages=en&format=json&maxlag=5"
         )
-        # Retry with exponential backoff for transient failures.
         last_err = None
-        for attempt in range(4):
+        for attempt in range(len(backoff) + 1):
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
                 resp = urllib.request.urlopen(req, timeout=30)
@@ -391,16 +395,28 @@ def _resolve_qid_labels(entries):
                         labels[qid] = label
                 last_err = None
                 break
+            except urllib.error.HTTPError as e:
+                last_err = e
+                if attempt >= len(backoff):
+                    break
+                ra = e.headers.get("Retry-After") if e.headers else None
+                wait = int(ra) if (ra and ra.isdigit()) else backoff[attempt]
+                time.sleep(wait)
             except Exception as e:
                 last_err = e
-                if attempt < 3:
-                    time.sleep(2 ** attempt)
+                if attempt >= len(backoff):
+                    break
+                time.sleep(backoff[attempt])
         if last_err is not None:
             raise RuntimeError(
                 f"Wikidata label resolution failed for batch "
-                f"{i // batch_size + 1} after 4 attempts — refusing to "
-                f"publish data with raw Q-IDs. Last error: {last_err}"
+                f"{i // batch_size + 1} after {len(backoff) + 1} attempts — "
+                f"refusing to publish data with raw Q-IDs. "
+                f"Last error: {last_err}"
             ) from last_err
+
+        # Pace requests so the API doesn't rate-limit us into a retry storm.
+        time.sleep(0.1)
 
         if i > 0 and (i // batch_size) % 20 == 0:
             print(f"  ...resolved {len(labels):,}/{len(qids_to_resolve):,}")
