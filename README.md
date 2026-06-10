@@ -47,7 +47,9 @@ Pinned versions are also available on
 | `related_images` | list\<string\> | Additional Wikidata images (P6802)                       |
 | `bbox`           | struct         | Covering bbox for spatial predicate pushdown             |
 
-The PMTiles carry only `page_id`, `label`, and `inlink_count`. The demo
+The PMTiles carry `page_id`, `label`, `inlink_count`, and `instance_of_qid` —
+the QID lets downstream consumers apply their own category taxonomy via
+Mapbox/MapLibre `match` expressions without rebuilding tiles. The demo
 enriches popups on click by querying the GeoParquet directly via DuckDB-WASM.
 Reconstruct article URLs client-side: `https://en.wikipedia.org/?curid={page_id}`
 
