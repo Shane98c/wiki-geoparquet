@@ -37,6 +37,9 @@ WIKIDATA_NT_URL = "https://dumps.wikimedia.org/wikidatawiki/entities/latest-trut
 DUMP_BASE_URL = "https://dumps.wikimedia.org/enwiki/latest"
 DUMP_LOCAL_DIR = "data/dumps"
 OUTPUT_FILE = "data/wikipedia_geotagged.parquet"
+QID_LABEL_BATCH_SIZE = 50
+QID_LABEL_MAX_ATTEMPTS = 8
+QID_LABEL_REQUEST_DELAY = 1.0
 USER_AGENT = "wiki-geoparquet/1.0 (github.com/Shane98c/wiki-geoparquet)"
 
 COP_DEM_BASE = "https://copernicus-dem-30m.s3.amazonaws.com"
@@ -370,22 +373,29 @@ def _resolve_qid_labels(entries):
 
     labels = {}
     qid_list = sorted(qids_to_resolve)
-    batch_size = 50
 
-    for i in range(0, len(qid_list), batch_size):
-        batch = qid_list[i:i + batch_size]
+    for i in range(0, len(qid_list), QID_LABEL_BATCH_SIZE):
+        if i > 0:
+            # Pace requests — Wikimedia throttles bursts, and GitHub-runner
+            # IPs are rate-limited far harder than residential ones.
+            time.sleep(QID_LABEL_REQUEST_DELAY)
+        batch = qid_list[i:i + QID_LABEL_BATCH_SIZE]
+        batch_num = i // QID_LABEL_BATCH_SIZE + 1
         ids = "|".join(batch)
         url = (
             "https://www.wikidata.org/w/api.php?action=wbgetentities"
             f"&ids={ids}&props=labels&languages=en&format=json"
         )
-        # Retry with exponential backoff for transient failures.
+        # Retry with backoff. On 429/503 honor Retry-After — the throttle
+        # window outlasts short sleeps, so wait generously before retrying.
         last_err = None
-        for attempt in range(4):
+        for attempt in range(QID_LABEL_MAX_ATTEMPTS):
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
                 resp = urllib.request.urlopen(req, timeout=30)
                 data = json.loads(resp.read())
+                if "error" in data:
+                    raise RuntimeError(data["error"])
                 for qid, entity in data.get("entities", {}).items():
                     label = entity.get("labels", {}).get("en", {}).get("value")
                     if label:
@@ -394,16 +404,32 @@ def _resolve_qid_labels(entries):
                 break
             except Exception as e:
                 last_err = e
-                if attempt < 3:
-                    time.sleep(2 ** attempt)
+                if attempt == QID_LABEL_MAX_ATTEMPTS - 1:
+                    break
+                if getattr(e, "code", None) in (429, 503):
+                    header = e.headers.get("Retry-After") if e.headers else None
+                    wait = (
+                        int(header)
+                        if header and header.isdigit()
+                        else min(5 * 2 ** attempt, 120)
+                    )
+                    print(
+                        f"  Wikidata returned HTTP {e.code}; waiting "
+                        f"{wait}s before retry "
+                        f"{attempt + 2}/{QID_LABEL_MAX_ATTEMPTS}"
+                    )
+                else:
+                    wait = 2 ** attempt
+                time.sleep(wait)
         if last_err is not None:
             raise RuntimeError(
                 f"Wikidata label resolution failed for batch "
-                f"{i // batch_size + 1} after 4 attempts — refusing to "
-                f"publish data with raw Q-IDs. Last error: {last_err}"
+                f"{batch_num} after {QID_LABEL_MAX_ATTEMPTS} attempts "
+                f"— refusing to publish data with raw Q-IDs. "
+                f"Last error: {last_err}"
             ) from last_err
 
-        if i > 0 and (i // batch_size) % 20 == 0:
+        if batch_num % 20 == 0:
             print(f"  ...resolved {len(labels):,}/{len(qids_to_resolve):,}")
 
     elapsed = time.time() - start

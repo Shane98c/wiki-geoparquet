@@ -32,7 +32,8 @@ tiles: $(PARQUET)
 				json_object( \
 					'page_id', page_id, \
 					'label', label, \
-					'inlink_count', inlink_count \
+					'inlink_count', inlink_count, \
+					'instance_of_qid', instance_of_qid \
 				) AS properties \
 			FROM '$(PARQUET)' \
 		) TO STDOUT (FORMAT json, ARRAY false); \
