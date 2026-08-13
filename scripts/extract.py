@@ -1068,6 +1068,7 @@ def main():
     print(f"\n→ Hilbert-sorting with bbox covering...")
     subprocess.run(
         ["uv", "run", "gpio", "sort", "hilbert", "--add-bbox",
+         "--row-group-size", "25000",
          OUTPUT_FILE, OUTPUT_FILE],
         check=True,
     )
