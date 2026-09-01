@@ -2,7 +2,7 @@ name: Monthly Build
 
 on:
   schedule:
-    - cron: "0 6 1 * *" # 1st of each month, 6am UTC
+    - cron: "43 3 9 * *" # 9th of each month, 03:43 UTC — avoids dump-server and Actions congestion around the 1st
   workflow_dispatch: # manual trigger
 
 env:
