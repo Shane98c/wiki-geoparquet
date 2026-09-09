@@ -65,16 +65,11 @@ _NT_RE = re.compile(
 
 # ── MySQL dump parser ─────────────────────────────────────────
 
-def parse_insert_tuples(line_bytes, table_name):
-    """Parse MySQL INSERT statement, yielding tuples of values.
+def parse_insert_tuples(data):
+    """Parse the VALUES portion of a MySQL INSERT, yielding tuples of values.
 
     Handles: quoted strings (with \\-escapes), integers, floats, NULL.
     """
-    prefix = f"INSERT INTO `{table_name}` VALUES ".encode()
-    if not line_bytes.startswith(prefix):
-        return
-
-    data = line_bytes[len(prefix):]
     pos = 0
     n = len(data)
 
@@ -171,16 +166,25 @@ def stream_dump(name, table_name, max_insert_lines=None):
         resp = urllib.request.urlopen(req)
         gz = gzip.GzipFile(fileobj=resp)
 
+    # Dumps come in two layouts: the whole statement on one line
+    # (`INSERT INTO ... VALUES (...),(...);`), or `VALUES` alone on the
+    # INSERT line with one row tuple per following line, ending with `;`.
+    prefix = f"INSERT INTO `{table_name}` VALUES".encode()
     insert_lines = 0
+    in_statement = False
     for line_bytes in gz:
-        if not line_bytes.startswith(b'INSERT'):
-            continue
-
-        insert_lines += 1
-        if max_insert_lines and insert_lines > max_insert_lines:
-            break
-
-        yield from parse_insert_tuples(line_bytes, table_name)
+        if line_bytes.startswith(prefix):
+            insert_lines += 1
+            if max_insert_lines and insert_lines > max_insert_lines:
+                break
+            data = line_bytes[len(prefix):]
+            in_statement = not data.rstrip().endswith(b';')
+            yield from parse_insert_tuples(data)
+        elif in_statement:
+            if line_bytes.lstrip()[:1] == b'(':
+                yield from parse_insert_tuples(line_bytes)
+            if line_bytes.rstrip().endswith(b';'):
+                in_statement = False
 
     gz.close()
 
@@ -660,12 +664,21 @@ def step5_linktarget(geo_pages, test_mode):
     matched_ns0 = 0
     limit = 500 if test_mode else None
 
+    in_statement = False
     for line in gz:
-        if not line.startswith(b'INSERT'):
+        if line.startswith(b'INSERT'):
+            insert_lines += 1
+            if limit and insert_lines > limit:
+                break
+            in_statement = not line.rstrip().endswith(b';')
+            if insert_lines % 500 == 0:
+                print(f"  ...{insert_lines:,} INSERT statements, "
+                      f"{matched_ns0:,} ns=0 rows, {len(lt_id_to_pid):,} mapped")
+        elif in_statement:
+            if line.rstrip().endswith(b';'):
+                in_statement = False
+        else:
             continue
-        insert_lines += 1
-        if limit and insert_lines > limit:
-            break
 
         for m in _LT_NS0_RE.finditer(line):
             matched_ns0 += 1
@@ -673,14 +686,10 @@ def step5_linktarget(geo_pages, test_mode):
             if pid is not None:
                 lt_id_to_pid[int(m.group(1))] = pid
 
-        if insert_lines % 500 == 0:
-            print(f"  ...{insert_lines:,} INSERT lines, "
-                  f"{matched_ns0:,} ns=0 rows, {len(lt_id_to_pid):,} mapped")
-
     gz.close()
 
     elapsed = time.time() - start
-    print(f"  Scanned {insert_lines:,} INSERT lines, {matched_ns0:,} ns=0 rows "
+    print(f"  Scanned {insert_lines:,} INSERT statements, {matched_ns0:,} ns=0 rows "
           f"→ mapped {len(lt_id_to_pid):,} to geo pages ({elapsed / 60:.1f}m)")
     return lt_id_to_pid
 
@@ -717,23 +726,27 @@ def step6_pagelinks(geo_pages, lt_id_to_pid, test_mode):
     insert_lines = 0
     limit = 500 if test_mode else None
 
+    in_statement = False
     for line_bytes in gz:
-        if not line_bytes.startswith(b'INSERT'):
+        if line_bytes.startswith(b'INSERT'):
+            insert_lines += 1
+            if limit and insert_lines > limit:
+                break
+            in_statement = not line_bytes.rstrip().endswith(b';')
+            lines += 1
+            if lines % 500 == 0:
+                print(f"  ...{lines:,} INSERT statements, {hits:,} hits")
+        elif in_statement:
+            if line_bytes.rstrip().endswith(b';'):
+                in_statement = False
+        else:
             continue
 
-        insert_lines += 1
-        if limit and insert_lines > limit:
-            break
-
-        lines += 1
         for m in _NS0_RE.finditer(line_bytes):
             pid = target_id_bytes_to_pid.get(m.group(1))
             if pid is not None:
                 inlink_counts[pid] = inlink_counts.get(pid, 0) + 1
                 hits += 1
-
-        if lines % 500 == 0:
-            print(f"  ...{lines:,} INSERT lines, {hits:,} hits")
 
     gz.close()
 
@@ -742,7 +755,7 @@ def step6_pagelinks(geo_pages, lt_id_to_pid, test_mode):
 
     with_inlinks = sum(1 for p in geo_pages.values() if p.get("inlink_count", 0) > 0)
     elapsed = time.time() - start
-    print(f"  Scanned {lines:,} INSERT lines, {hits:,} hits → "
+    print(f"  Scanned {lines:,} INSERT statements, {hits:,} hits → "
           f"{with_inlinks:,} pages have inlinks ({elapsed / 60:.1f}m)")
 
 
