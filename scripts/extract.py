@@ -40,6 +40,9 @@ OUTPUT_FILE = "data/wikipedia_geotagged.parquet"
 QID_LABEL_BATCH_SIZE = 50
 QID_LABEL_MAX_ATTEMPTS = 8
 QID_LABEL_REQUEST_DELAY = 1.0
+# Labels resolved by earlier builds, shipped with each release and seeded into
+# the next build, so only QIDs new to the dataset are asked of the API.
+QID_LABEL_CACHE = "data/qid_labels.json"
 USER_AGENT = "wiki-geoparquet/1.0 (github.com/Shane98c/wiki-geoparquet)"
 
 COP_DEM_BASE = "https://copernicus-dem-30m.s3.amazonaws.com"
@@ -351,13 +354,44 @@ def step1_wikidata(test_mode):
     return wikidata
 
 
-def _resolve_qid_labels(entries):
+def _load_label_cache(path):
+    """QID → English label from an earlier build; empty when there is none."""
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"  Ignoring unreadable label cache {path}: {e}")
+        return {}
+    return {
+        q: l for q, l in data.items()
+        if isinstance(q, str) and q.startswith("Q") and isinstance(l, str) and l
+    }
+
+
+def _save_label_cache(path, labels):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(dict(sorted(labels.items())), f, ensure_ascii=False,
+                  indent=0, separators=(",", ":"))
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def _resolve_qid_labels(entries, cache_path=QID_LABEL_CACHE):
     """Resolve P31 and P17 QIDs to human-readable labels via Wikidata API.
 
     Called after page_props filtering so we only resolve QIDs for items that
     actually survive into the output — avoids unnecessary API calls and
     avoids failing the build on missing labels for QIDs that would have been
     filtered out anyway.
+
+    Labels already known from an earlier build are reused (cache_path), so a
+    monthly run asks the API only for QIDs new to the dataset: a few requests
+    rather than hundreds, which is what keeps the build inside Wikidata's
+    anonymous rate limit. The merged map is written back for the next build.
     """
     print("\n→ Resolving instance_of/country labels from Wikidata API...")
     start = time.time()
@@ -373,10 +407,11 @@ def _resolve_qid_labels(entries):
         print("  No QIDs to resolve")
         return
 
-    print(f"  {len(qids_to_resolve):,} unique QIDs to resolve")
-
-    labels = {}
-    qid_list = sorted(qids_to_resolve)
+    cached = _load_label_cache(cache_path)
+    labels = {q: cached[q] for q in qids_to_resolve if q in cached}
+    qid_list = sorted(qids_to_resolve - set(labels))
+    print(f"  {len(qids_to_resolve):,} unique QIDs; {len(labels):,} known from "
+          f"the label cache, {len(qid_list):,} to fetch")
 
     for i in range(0, len(qid_list), QID_LABEL_BATCH_SIZE):
         if i > 0:
@@ -438,6 +473,12 @@ def _resolve_qid_labels(entries):
 
     elapsed = time.time() - start
     print(f"  Resolved {len(labels):,} labels ({elapsed / 60:.1f}m)")
+
+    if cache_path:
+        # Keep every label ever resolved, not only this build's: a QID that
+        # drops out of one month's join is asked again when it returns.
+        _save_label_cache(cache_path, {**cached, **labels})
+        print(f"  Label cache written to {cache_path} ({len(cached) + len(set(labels) - set(cached)):,} labels)")
 
     unresolved = qids_to_resolve - set(labels)
     if unresolved:
@@ -920,6 +961,9 @@ def main():
                         help="Run step 1 only, save result to parquet, then exit")
     parser.add_argument("--load-wikidata",
                         help="Skip step 1, load wikidata from cached parquet")
+    parser.add_argument("--label-cache", default=QID_LABEL_CACHE,
+                        help="QID label map reused across builds "
+                             f"(default: {QID_LABEL_CACHE}; '' to disable)")
     args = parser.parse_args()
 
     os.makedirs("data", exist_ok=True)
@@ -958,7 +1002,7 @@ def main():
     # Resolve QID labels only for items that survived the enwiki join —
     # avoids wasted API calls and false failures on QIDs that would be
     # filtered out anyway.
-    _resolve_qid_labels(geo_pages)
+    _resolve_qid_labels(geo_pages, args.label_cache)
 
     # Steps 3-6: Wikipedia dump enrichment
     step3_geo_tags(geo_pages, args.test)
