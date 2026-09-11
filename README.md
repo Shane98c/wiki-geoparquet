@@ -21,6 +21,10 @@ Parquet-aware tool:
 | [`wikipedia_geotagged.pmtiles`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_geotagged.pmtiles) | Vector tiles, auto-zoom with overzoom, drops by article length                                                        |
 | [`wikipedia_search.parquet`](https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev/v2/wikipedia_search.parquet)       | Lightweight search index (lowercased label, coords, inlink count), sorted by label for prefix-range row-group pruning |
 
+Each release also carries `qid_labels.json`, the QID → English label map the
+build resolved for `instance_of` and `country`. The next monthly build seeds
+from it and asks the Wikidata API only for QIDs new to the dataset.
+
 Pinned versions are also available on
 [GitHub Releases](https://github.com/Shane98c/wiki-geoparquet/releases/latest).
 

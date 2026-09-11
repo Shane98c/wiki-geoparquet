@@ -89,9 +89,16 @@ jobs:
           name: wikidata-cache
           path: data
 
+      - name: Seed the QID label cache from the last release
+        run: |
+          gh release download --pattern qid_labels.json --dir data --clobber \
+            || echo "No qid_labels.json on the latest release; every label is fetched this run"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Extract GeoParquet
         run: uv run python scripts/extract.py --load-wikidata data/wikidata_cache.parquet
-        timeout-minutes: 120
+        timeout-minutes: 240
 
       - name: Build PMTiles
         run: make tiles TIPPECANOE=~/tippecanoe/tippecanoe
@@ -138,6 +145,7 @@ jobs:
             data/wikipedia_geotagged.parquet \
             data/wikipedia_geotagged.pmtiles \
             data/wikipedia_search.parquet \
+            data/qid_labels.json \
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
