@@ -10,6 +10,7 @@ Validates the GeoParquet file for:
   - Spot checks for well-known articles
   - GeoParquet metadata present
   - pageviews_month: nullable integer, month range recorded, known pages in range
+  - extent_km / area_km2 / osm_source: nullable, consistent, known feature in range
 """
 
 import json
@@ -314,6 +315,35 @@ def main():
                       f"got {row[0] if row else 'no row'}")
         else:
             print("    WARNING: no pageview months were joined; value checks skipped")
+
+    # OSM extent
+    print(f"\n→ OSM extent:")
+    for col, typ in (("extent_km", "FLOAT"), ("area_km2", "FLOAT"), ("osm_source", "BYTE_ARRAY")):
+        check(f"{col} column is {typ}", col_types.get(col) == typ,
+              f"got {col_types.get(col, 'missing')}")
+    if {"extent_km", "area_km2", "osm_source"} <= set(col_types):
+        with_extent, with_area, inconsistent, bad = db.execute(f"""
+            SELECT
+                count(extent_km),
+                count(area_km2),
+                count(*) FILTER (WHERE (extent_km IS NULL) != (osm_source IS NULL)
+                                    OR (area_km2 IS NOT NULL AND extent_km IS NULL)),
+                count(*) FILTER (WHERE extent_km <= 0 OR extent_km > 20000 OR area_km2 <= 0)
+            FROM '{PARQUET_FILE}'
+        """).fetchone()
+        print(f"    extent_km {with_extent:,} ({100 * with_extent / n:.1f}%), "
+              f"area_km2 {with_area:,} ({100 * with_area / n:.1f}%)")
+        check("extent_km, area_km2 and osm_source agree", inconsistent == 0,
+              f"{inconsistent:,} rows have one without the other")
+        check("extent_km and area_km2 are positive and plausible", bad == 0,
+              f"{bad:,} rows out of range")
+        row = db.execute(f"""
+            SELECT extent_km, area_km2 FROM '{PARQUET_FILE}' WHERE label = 'Lake Superior'
+        """).fetchone()
+        if row and row[0] is not None:
+            check("Lake Superior extent_km ~560 km", 500 <= row[0] <= 700, f"got {row[0]}")
+        else:
+            print("    Lake Superior has no extent yet (cache not filled); skipped")
 
     # Spot checks
     print(f"\n→ Spot checks:")

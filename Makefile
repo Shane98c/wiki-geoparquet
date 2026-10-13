@@ -1,5 +1,5 @@
 .PHONY: download extract tiles search validate build release upload clean \
-	pageviews pageviews-check upload-pageviews
+	pageviews pageviews-check osm osm-report upload-pageviews upload-osm
 
 DUMP_BASE   := https://dumps.wikimedia.org/enwiki/latest
 DUMP_DIR    := data/dumps
@@ -12,6 +12,9 @@ TIPPECANOE  ?= tippecanoe
 # Caches the build joins; each is filled by its own workflow (see README).
 PV_MONTH    ?= $(shell date -v-1m +%Y-%m 2>/dev/null || date -d "last month" +%Y-%m)
 PV_CACHE    := data/pageviews/en
+OSM_MONTH   ?= $(shell date +%Y-%m)
+OSM_SOURCE  ?= $(PARQUET)
+OSM_TOP     ?= 2000
 
 download:
 	mkdir -p $(DUMP_DIR)
@@ -73,6 +76,12 @@ pageviews:
 pageviews-check: $(PARQUET)
 	uv run python scripts/pageviews.py --check $(PARQUET)
 
+osm:
+	uv run python scripts/osm_extent.py --extract --month $(OSM_MONTH)
+
+osm-report:
+	uv run python scripts/osm_extent.py --report --source $(OSM_SOURCE) --top $(OSM_TOP)
+
 build: extract tiles search validate
 	@echo "Build complete."
 
@@ -93,6 +102,10 @@ release:
 upload-pageviews:
 	wrangler r2 object put wiki-geoparquet/pageviews/en/$(PV_MONTH).parquet \
 		--file $(PV_CACHE)/$(PV_MONTH).parquet --content-type application/vnd.apache.parquet --remote
+
+upload-osm:
+	wrangler r2 object put wiki-geoparquet/osm/extent-$(OSM_MONTH).parquet \
+		--file data/osm/extent-$(OSM_MONTH).parquet --content-type application/vnd.apache.parquet --remote
 
 upload:
 	wrangler r2 object put wiki-geoparquet/v2/wikipedia_geotagged.parquet \

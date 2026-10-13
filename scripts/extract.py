@@ -9,6 +9,7 @@ Coordinates and enrichment come from the Wikidata truthy N-Triples dump (~70GB):
   - P1566: GeoNames ID
   - P18:   image (fallback for page_image_free)
   - P6802: related images
+  - P402:  OpenStreetMap relation ID (a join key for the OSM extent extract)
 
 Article metadata comes from Wikipedia SQL dumps (~12GB):
   - page_props: QID→page_id mapping, lead images, descriptions
@@ -17,8 +18,9 @@ Article metadata comes from Wikipedia SQL dumps (~12GB):
   - linktarget: link target ID mappings
   - pagelinks:  inbound link counts
 
-A cache another workflow fills is joined, never queried here:
+Two caches other workflows fill are joined, never queried here:
   - pageviews:  median monthly views per page (scripts/pageviews.py)
+  - osm extent: feature size from OpenStreetMap (scripts/osm_extent.py)
 
 Outputs a Hilbert-sorted GeoParquet 1.1 file with bbox covering metadata.
 Use --test to validate with a small subset first.
@@ -37,6 +39,7 @@ import urllib.request
 sys.stdout.reconfigure(line_buffering=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import osm_extent
 import pageviews
 
 WIKIDATA_NT_URL = "https://dumps.wikimedia.org/wikidatawiki/entities/latest-truthy.nt.gz"
@@ -62,7 +65,7 @@ DUMP_FILES = {
 }
 
 # Properties to extract from the Wikidata truthy N-Triples dump
-WIKIDATA_PROPERTIES = ["P625", "P31", "P17", "P1082", "P1566", "P18", "P6802"]
+WIKIDATA_PROPERTIES = ["P625", "P31", "P17", "P1082", "P1566", "P18", "P6802", "P402"]
 
 # Regex to parse NT triples: <entity/QID> <prop/direct/PID> object .
 _NT_RE = re.compile(
@@ -238,6 +241,10 @@ def _parse_nt_value(raw_bytes, prop):
         m = re.search(r'"([^"]+)"', raw)
         return m.group(1) if m else None
 
+    if prop == "P402":
+        m = re.search(r'"(\d+)"', raw)
+        return int(m.group(1)) if m else None
+
     if prop in ("P18", "P6802"):
         m = re.search(r'<(http[^>]+)>', raw)
         if not m:
@@ -330,6 +337,8 @@ def step1_wikidata(test_mode):
             buffer["population"] = value
         elif prop == "P1566":
             buffer["geonames_id"] = value
+        elif prop == "P402" and "osm_relation" not in buffer:
+            buffer["osm_relation"] = value
         elif prop == "P18":
             buffer["p18_image"] = value
         elif prop == "P6802":
@@ -561,6 +570,7 @@ def step2_page_props(wikidata, test_mode):
             "country": wd.get("country", ""),
             "population": wd.get("population"),
             "geonames_id": wd.get("geonames_id", ""),
+            "osm_relation": wd.get("osm_relation"),
             "image_url": image_url,
             "related_images": wd.get("related_images", []),
             "description": page_descs.get(page_id, ""),
@@ -934,6 +944,40 @@ def step7_pageviews(geo_pages, months_wanted, cache_dir, url_base):
     return months
 
 
+def step8_osm_extent(geo_pages, cache_dir, url_base):
+    """Feature extent and area from the newest OSM extract, where a page
+    matches an OSM way or relation by QID, English title or P402."""
+    print(f"\n→ Step 8: OSM extent...")
+    start = time.time()
+    extract_file = osm_extent.ensure_extract(cache_dir, url_base)
+    if not extract_file:
+        print("  WARNING: no OSM extent extract available; extent columns will be null")
+        return ""
+
+    import duckdb
+    import pyarrow as pa
+
+    pids = [pid for pid, info in geo_pages.items() if info.get("title")]
+    pages = pa.table({
+        "page_id": pa.array(pids, type=pa.int32()),
+        "qid": pa.array([geo_pages[p].get("qid", "") for p in pids], type=pa.string()),
+        "title": pa.array([geo_pages[p]["title"] for p in pids], type=pa.string()),
+        "osm_relation": pa.array([geo_pages[p].get("osm_relation") for p in pids], type=pa.int64()),
+    })
+    db = duckdb.connect()
+    db.register("pages", pages)
+    sizes = osm_extent.sizes_by_page(db, extract_file, "pages")
+    db.close()
+    for pid, (extent, area, source) in sizes.items():
+        info = geo_pages[pid]
+        info["extent_km"] = extent
+        info["area_km2"] = area
+        info["osm_source"] = source
+    print(f"  {len(sizes):,} of {len(pids):,} pages match an OSM way or relation "
+          f"in {os.path.basename(extract_file)} ({(time.time() - start) / 60:.1f}m)")
+    return os.path.basename(extract_file)
+
+
 def _write_kv_metadata(path, metadata):
     """Add key-value metadata to a finished parquet, row groups as they are."""
     import pyarrow.parquet as pq
@@ -966,6 +1010,7 @@ def _save_wikidata_cache(wikidata, path):
         "country": pa.array([wikidata[q].get("country", "") for q in qids], type=pa.string()),
         "population": pa.array([wikidata[q].get("population") for q in qids], type=pa.int64()),
         "geonames_id": pa.array([wikidata[q].get("geonames_id", "") for q in qids], type=pa.string()),
+        "osm_relation": pa.array([wikidata[q].get("osm_relation") for q in qids], type=pa.int64()),
         "p18_image": pa.array([wikidata[q].get("p18_image", "") for q in qids], type=pa.string()),
         "related_images": pa.array([wikidata[q].get("related_images", []) for q in qids],
                                    type=pa.list_(pa.string())),
@@ -984,6 +1029,7 @@ def _load_wikidata_cache(path):
     # Older caches (pre-instance_of_qid column) stored the QID in instance_of
     # since caching happens before label resolution — fall back to that.
     has_qid_col = "instance_of_qid" in table.column_names
+    has_osm_col = "osm_relation" in table.column_names
     wikidata = {}
     for i in range(len(table)):
         qid = table["qid"][i].as_py()
@@ -998,6 +1044,10 @@ def _load_wikidata_cache(path):
         pop = table["population"][i].as_py()
         if pop is not None:
             entry["population"] = pop
+        if has_osm_col:
+            rel = table["osm_relation"][i].as_py()
+            if rel is not None:
+                entry["osm_relation"] = rel
         imgs = table["related_images"][i].as_py()
         if imgs:
             entry["related_images"] = imgs
@@ -1027,6 +1077,10 @@ def main():
                         help=f"month extracts (default: {pageviews.CACHE_DIR})")
     parser.add_argument("--pageviews-url", default=pageviews.CACHE_URL_BASE,
                         help="where missing month extracts are fetched from ('' for none)")
+    parser.add_argument("--osm-dir", default=osm_extent.CACHE_DIR,
+                        help=f"OSM extent extracts (default: {osm_extent.CACHE_DIR}; '' to skip)")
+    parser.add_argument("--osm-url", default=osm_extent.CACHE_URL_BASE,
+                        help="where a missing extract is fetched from ('' for none)")
     args = parser.parse_args()
 
     os.makedirs("data", exist_ok=True)
@@ -1077,6 +1131,9 @@ def main():
     if args.pageviews_months > 0:
         pageview_months = step7_pageviews(
             geo_pages, args.pageviews_months, args.pageviews_dir, args.pageviews_url)
+    osm_extract = ""
+    if args.osm_dir:
+        osm_extract = step8_osm_extent(geo_pages, args.osm_dir, args.osm_url)
 
     # ── Assemble rows ───────────────────────────────────────
     print(f"\n→ Assembling output...")
@@ -1105,6 +1162,9 @@ def main():
             "image_url": info.get("image_url", ""),
             "related_images": info.get("related_images", []),
             "pageviews_month": info.get("pageviews_month"),
+            "extent_km": info.get("extent_km"),
+            "area_km2": info.get("area_km2"),
+            "osm_source": info.get("osm_source"),
         })
 
     # ── Sample elevation ──────────────────────────────────
@@ -1130,6 +1190,7 @@ def main():
     with_geonames = sum(1 for r in rows if r["geonames_id"])
     with_related = sum(1 for r in rows if r["related_images"])
     with_views = sum(1 for r in rows if r["pageviews_month"] is not None)
+    with_extent = sum(1 for r in rows if r["extent_km"] is not None)
     avg_len = sum(r["page_len"] for r in rows) / len(rows)
     avg_inlinks = sum(r["inlink_count"] for r in rows) / len(rows)
 
@@ -1141,6 +1202,7 @@ def main():
     print(f"  With GeoNames ID: {with_geonames:,} ({100 * with_geonames / len(rows):.0f}%)")
     print(f"  With related img: {with_related:,} ({100 * with_related / len(rows):.0f}%)")
     print(f"  With pageviews:   {with_views:,} ({100 * with_views / len(rows):.0f}%)")
+    print(f"  With OSM extent:  {with_extent:,} ({100 * with_extent / len(rows):.0f}%)")
     print(f"  With inlinks:     {with_inlinks:,}")
     print(f"  Avg page_len:     {avg_len:,.0f} bytes")
     print(f"  Avg inlinks:      {avg_inlinks:,.0f}")
@@ -1174,6 +1236,9 @@ def main():
         "related_images": pa.array([r["related_images"] for r in rows],
                                    type=pa.list_(pa.string())),
         "pageviews_month": pa.array([r["pageviews_month"] for r in rows], type=pa.int32()),
+        "extent_km": pa.array([r["extent_km"] for r in rows], type=pa.float32()),
+        "area_km2": pa.array([r["area_km2"] for r in rows], type=pa.float32()),
+        "osm_source": pa.array([r["osm_source"] for r in rows], type=pa.string()),
     })
     del rows  # free memory
 
@@ -1186,7 +1251,7 @@ def main():
                 page_id, qid, label, description, instance_of, instance_of_qid,
                 country, population, geonames_id, elevation, gt_type,
                 page_len, inlink_count, wikipedia_url, image_url,
-                related_images, pageviews_month
+                related_images, pageviews_month, extent_km, area_km2, osm_source
             FROM raw
         ) TO '{OUTPUT_FILE}'
         WITH (FORMAT PARQUET, COMPRESSION ZSTD)
@@ -1206,6 +1271,7 @@ def main():
     _write_kv_metadata(OUTPUT_FILE, {
         "pageviews_months": ",".join(pageview_months),
         "pageviews_months_wanted": str(args.pageviews_months),
+        "osm_extent_extract": osm_extract,
     })
 
     file_size_mb = os.path.getsize(OUTPUT_FILE) / (1024 * 1024)
