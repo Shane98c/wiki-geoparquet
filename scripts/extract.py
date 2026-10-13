@@ -17,6 +17,9 @@ Article metadata comes from Wikipedia SQL dumps (~12GB):
   - linktarget: link target ID mappings
   - pagelinks:  inbound link counts
 
+A cache another workflow fills is joined, never queried here:
+  - pageviews:  median monthly views per page (scripts/pageviews.py)
+
 Outputs a Hilbert-sorted GeoParquet 1.1 file with bbox covering metadata.
 Use --test to validate with a small subset first.
 """
@@ -32,6 +35,9 @@ import time
 import urllib.request
 
 sys.stdout.reconfigure(line_buffering=True)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import pageviews
 
 WIKIDATA_NT_URL = "https://dumps.wikimedia.org/wikidatawiki/entities/latest-truthy.nt.gz"
 DUMP_BASE_URL = "https://dumps.wikimedia.org/enwiki/latest"
@@ -893,6 +899,56 @@ def sample_elevations(rows):
           f"({failed_tiles:,} missing/ocean tiles → elevation 0) ({elapsed / 60:.1f}m)")
 
 
+# ── Cached enrichment ─────────────────────────────────────────
+
+def step7_pageviews(geo_pages, months_wanted, cache_dir, url_base):
+    """Median monthly views per page from the cached month extracts.
+
+    Returns the months joined. A month nobody has is a warning, not a
+    failure: the build goes on with the months there are.
+    """
+    print(f"\n→ Step 7: Pageviews (median of the last {months_wanted} months)...")
+    start = time.time()
+    months = pageviews.ensure_months(months_wanted, cache_dir, url_base)
+    if not months:
+        print("  WARNING: no pageview months available; pageviews_month will be null")
+        return []
+
+    import duckdb
+    import pyarrow as pa
+
+    pids = [pid for pid, info in geo_pages.items() if info.get("title")]
+    pages = pa.table({
+        "page_id": pa.array(pids, type=pa.int32()),
+        "title": pa.array([geo_pages[p]["title"] for p in pids], type=pa.string()),
+    })
+    db = duckdb.connect()
+    db.register("pages", pages)
+    views = pageviews.median_views(
+        db, [pageviews.cache_path(m, cache_dir) for m in months], "pages")
+    db.close()
+    for pid, v in views.items():
+        geo_pages[pid]["pageviews_month"] = v
+    print(f"  {len(views):,} of {len(pids):,} pages have views over "
+          f"{months[0]}..{months[-1]} ({len(months)} months, {(time.time() - start) / 60:.1f}m)")
+    return months
+
+
+def _write_kv_metadata(path, metadata):
+    """Add key-value metadata to a finished parquet, row groups as they are."""
+    import pyarrow.parquet as pq
+
+    pf = pq.ParquetFile(path)
+    schema = pf.schema_arrow
+    merged = dict(schema.metadata or {})
+    merged.update({k.encode(): v.encode() for k, v in metadata.items()})
+    tmp = path + ".tmp"
+    with pq.ParquetWriter(tmp, schema.with_metadata(merged), compression="zstd") as writer:
+        for i in range(pf.num_row_groups):
+            writer.write_table(pf.read_row_group(i))
+    os.replace(tmp, path)
+
+
 # ── Main ──────────────────────────────────────────────────────
 
 def _save_wikidata_cache(wikidata, path):
@@ -964,6 +1020,13 @@ def main():
     parser.add_argument("--label-cache", default=QID_LABEL_CACHE,
                         help="QID label map reused across builds "
                              f"(default: {QID_LABEL_CACHE}; '' to disable)")
+    parser.add_argument("--pageviews-months", type=int, default=12,
+                        help="months whose cached extracts feed pageviews_month "
+                             "(default: 12; 0 to skip)")
+    parser.add_argument("--pageviews-dir", default=pageviews.CACHE_DIR,
+                        help=f"month extracts (default: {pageviews.CACHE_DIR})")
+    parser.add_argument("--pageviews-url", default=pageviews.CACHE_URL_BASE,
+                        help="where missing month extracts are fetched from ('' for none)")
     args = parser.parse_args()
 
     os.makedirs("data", exist_ok=True)
@@ -1010,6 +1073,11 @@ def main():
     lt_id_to_pid = step5_linktarget(geo_pages, args.test)
     step6_pagelinks(geo_pages, lt_id_to_pid, args.test)
 
+    pageview_months = []
+    if args.pageviews_months > 0:
+        pageview_months = step7_pageviews(
+            geo_pages, args.pageviews_months, args.pageviews_dir, args.pageviews_url)
+
     # ── Assemble rows ───────────────────────────────────────
     print(f"\n→ Assembling output...")
     rows = []
@@ -1036,6 +1104,7 @@ def main():
             "wikipedia_url": "https://en.wikipedia.org/wiki/" + title,
             "image_url": info.get("image_url", ""),
             "related_images": info.get("related_images", []),
+            "pageviews_month": info.get("pageviews_month"),
         })
 
     # ── Sample elevation ──────────────────────────────────
@@ -1060,6 +1129,7 @@ def main():
     with_pop = sum(1 for r in rows if r["population"] is not None)
     with_geonames = sum(1 for r in rows if r["geonames_id"])
     with_related = sum(1 for r in rows if r["related_images"])
+    with_views = sum(1 for r in rows if r["pageviews_month"] is not None)
     avg_len = sum(r["page_len"] for r in rows) / len(rows)
     avg_inlinks = sum(r["inlink_count"] for r in rows) / len(rows)
 
@@ -1070,6 +1140,7 @@ def main():
     print(f"  With population:  {with_pop:,} ({100 * with_pop / len(rows):.0f}%)")
     print(f"  With GeoNames ID: {with_geonames:,} ({100 * with_geonames / len(rows):.0f}%)")
     print(f"  With related img: {with_related:,} ({100 * with_related / len(rows):.0f}%)")
+    print(f"  With pageviews:   {with_views:,} ({100 * with_views / len(rows):.0f}%)")
     print(f"  With inlinks:     {with_inlinks:,}")
     print(f"  Avg page_len:     {avg_len:,.0f} bytes")
     print(f"  Avg inlinks:      {avg_inlinks:,.0f}")
@@ -1102,6 +1173,7 @@ def main():
         "image_url": pa.array([r["image_url"] for r in rows], type=pa.string()),
         "related_images": pa.array([r["related_images"] for r in rows],
                                    type=pa.list_(pa.string())),
+        "pageviews_month": pa.array([r["pageviews_month"] for r in rows], type=pa.int32()),
     })
     del rows  # free memory
 
@@ -1114,7 +1186,7 @@ def main():
                 page_id, qid, label, description, instance_of, instance_of_qid,
                 country, population, geonames_id, elevation, gt_type,
                 page_len, inlink_count, wikipedia_url, image_url,
-                related_images
+                related_images, pageviews_month
             FROM raw
         ) TO '{OUTPUT_FILE}'
         WITH (FORMAT PARQUET, COMPRESSION ZSTD)
@@ -1129,6 +1201,12 @@ def main():
          OUTPUT_FILE, OUTPUT_FILE],
         check=True,
     )
+
+    # The sort writes its own footer, so the build's metadata goes on last.
+    _write_kv_metadata(OUTPUT_FILE, {
+        "pageviews_months": ",".join(pageview_months),
+        "pageviews_months_wanted": str(args.pageviews_months),
+    })
 
     file_size_mb = os.path.getsize(OUTPUT_FILE) / (1024 * 1024)
     print(f"\nWritten to {OUTPUT_FILE} ({file_size_mb:.1f} MB)")

@@ -1,4 +1,5 @@
-.PHONY: download extract tiles search validate build release upload clean
+.PHONY: download extract tiles search validate build release upload clean \
+	pageviews pageviews-check upload-pageviews
 
 DUMP_BASE   := https://dumps.wikimedia.org/enwiki/latest
 DUMP_DIR    := data/dumps
@@ -8,6 +9,9 @@ PARQUET     := data/wikipedia_geotagged.parquet
 PMTILES     := data/wikipedia_geotagged.pmtiles
 SEARCH      := data/wikipedia_search.parquet
 TIPPECANOE  ?= tippecanoe
+# Caches the build joins; each is filled by its own workflow (see README).
+PV_MONTH    ?= $(shell date -v-1m +%Y-%m 2>/dev/null || date -d "last month" +%Y-%m)
+PV_CACHE    := data/pageviews/en
 
 download:
 	mkdir -p $(DUMP_DIR)
@@ -63,6 +67,12 @@ search: $(PARQUET)
 		) TO '$(SEARCH)' (FORMAT PARQUET, COMPRESSION ZSTD); \
 	"
 
+pageviews:
+	uv run python scripts/pageviews.py --month $(PV_MONTH)
+
+pageviews-check: $(PARQUET)
+	uv run python scripts/pageviews.py --check $(PARQUET)
+
 build: extract tiles search validate
 	@echo "Build complete."
 
@@ -79,6 +89,10 @@ release:
 		$(PMTILES) \
 		$(SEARCH) \
 		--clobber
+
+upload-pageviews:
+	wrangler r2 object put wiki-geoparquet/pageviews/en/$(PV_MONTH).parquet \
+		--file $(PV_CACHE)/$(PV_MONTH).parquet --content-type application/vnd.apache.parquet --remote
 
 upload:
 	wrangler r2 object put wiki-geoparquet/v2/wikipedia_geotagged.parquet \

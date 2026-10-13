@@ -9,6 +9,7 @@ Validates the GeoParquet file for:
   - gt_type coverage
   - Spot checks for well-known articles
   - GeoParquet metadata present
+  - pageviews_month: nullable integer, month range recorded, known pages in range
 """
 
 import json
@@ -275,6 +276,44 @@ def main():
     print(f"    With image:         {with_image:>8,} ({100 * with_image / n:.0f}%)")
     print(f"    With related_images:{with_related:>8,} ({100 * with_related / n:.0f}%)")
     print(f"    With inlinks:       {with_inlinks:>8,} ({100 * with_inlinks / n:.0f}%)")
+
+    # Pageviews
+    print(f"\n→ Pageviews:")
+    col_types = {row[0]: row[1] for row in db.execute(
+        f"SELECT name, type FROM parquet_schema('{PARQUET_FILE}')"
+    ).fetchall()}
+    check("pageviews_month column exists", "pageviews_month" in col_types)
+    if "pageviews_month" in col_types:
+        check("pageviews_month is INT32", col_types["pageviews_month"] == "INT32",
+              f"got {col_types['pageviews_month']}")
+        months_row = db.execute(f"""
+            SELECT value FROM parquet_kv_metadata('{PARQUET_FILE}')
+            WHERE key = 'pageviews_months'
+        """).fetchone()
+        months = [m for m in (months_row[0].decode() if months_row else "").split(",") if m]
+        check("pageviews month range recorded", months_row is not None)
+        with_views, null_views = db.execute(f"""
+            SELECT count(pageviews_month), count(*) - count(pageviews_month)
+            FROM '{PARQUET_FILE}'
+        """).fetchone()
+        print(f"    months: {months[0] + '..' + months[-1] if months else '(none)'} "
+              f"({len(months)}); populated {with_views:,} ({100 * with_views / n:.0f}%), "
+              f"null {null_views:,}")
+        if months:
+            check("pageviews_month populated for >50%", with_views > n * 0.5,
+                  f"only {with_views:,} ({100 * with_views / n:.0f}%)")
+            check("pageviews_month is nullable (some rows null)", null_views > 0,
+                  "every row has a value; pages the dump never saw should be null")
+            for name, lo, hi in (("Mount Rushmore", 10_000, 1_000_000),
+                                 ("Coon Rapids Dam", 50, 5_000)):
+                row = db.execute(f"""
+                    SELECT pageviews_month FROM '{PARQUET_FILE}' WHERE label = ?
+                """, [name]).fetchone()
+                check(f"'{name}' pageviews_month in {lo:,}..{hi:,}",
+                      row is not None and row[0] is not None and lo <= row[0] <= hi,
+                      f"got {row[0] if row else 'no row'}")
+        else:
+            print("    WARNING: no pageview months were joined; value checks skipped")
 
     # Spot checks
     print(f"\n→ Spot checks:")

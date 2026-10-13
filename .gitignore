@@ -22,3 +22,6 @@ r2-cors.json
 
 # Claude Code
 .claude/
+
+# Local run logs
+log/
