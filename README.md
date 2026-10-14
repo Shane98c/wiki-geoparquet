@@ -235,8 +235,8 @@ largest extent wins. An envelope wider than 180° straddles the antimeridian
 and says nothing about the feature's width (Russia, Antarctica and the United
 States all come back as −180..180), so such an object is flagged
 `antimeridian` in the extract and carries no extent. Measured on the top 2,000 natural-class rows by
-pageviews: 1,321 have `extent_km` (66 %) and 1,252 `area_km2` (63 %); over
-the whole 2026-10-09 release 534,702 rows (38.8 %) match. The unmatched
+pageviews: 1,319 have `extent_km` (66 %) and 1,250 `area_km2` (62 %); over
+the whole 2026-10-09 release 534,609 rows (38.8 %) match. The unmatched
 are mostly peaks mapped as nodes (Everest, K2, Denali, Fuji) and seas and
 ranges with no OSM object (Gulf of Mexico, Appalachian Mountains).
 
