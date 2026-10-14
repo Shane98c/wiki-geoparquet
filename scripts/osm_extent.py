@@ -38,7 +38,7 @@ USER_AGENT = ("wiki-geoparquet/1.0 (github.com/Shane98c/wiki-geoparquet; "
 PAGE_ROWS = 250_000
 MAX_ATTEMPTS = 4
 # How far back the build looks for an extract before giving up on the column.
-LOOKBACK_MONTHS = 6
+LOOKBACK_MONTHS = 12
 
 # instance_of labels the coverage report counts as natural or protected-area
 # classes, the features whose size matters.
