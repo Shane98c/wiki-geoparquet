@@ -6,7 +6,8 @@ size) is pulled from the QLever osm-planet SPARQL endpoint with its envelope
 and, for areas, osm2rdf's area, in a few paged queries. The result is one
 Parquet per month, data/osm/extent-YYYY-MM.parquet, with one row per OSM
 object: type, id, QID, Wikipedia language and title (the dump's underscore
-form), bbox, `extent_km` (the bbox's longer side) and `area_km2`.
+form), bbox, `extent_km` (the bbox's longer side) and `area_km2`. An
+envelope that spans the antimeridian is flagged and carries no extent.
 
 The build joins the newest extract it finds: by QID, by `en:` title, and by
 the Wikidata P402 relation id; of several OSM objects for one article the
@@ -187,10 +188,10 @@ def _parse_rows(tsv, rows):
             continue
         xmin, ymin, xmax, ymax = bbox
         kx, ky = _km_scale((ymin + ymax) / 2)
-        # An envelope wider than a hemisphere straddles the antimeridian.
+        # An envelope wider than a hemisphere straddles the antimeridian and
+        # says nothing about the feature's true width: no extent, flagged.
         width = xmax - xmin
-        if width > 180:
-            width = 360 - width
+        wraps = width > 180
         q = _QID.search(fields[1])
         lang, title = _wikipedia(fields[2])
         area = None
@@ -203,7 +204,8 @@ def _parse_rows(tsv, rows):
             "osm_type": m.group(1), "osm_id": int(m.group(2)),
             "qid": q.group(1) if q else None, "wiki_lang": lang, "wiki_title": title,
             "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
-            "extent_km": max(width * kx, (ymax - ymin) * ky),
+            "antimeridian": wraps,
+            "extent_km": None if wraps else max(width * kx, (ymax - ymin) * ky),
             "area_km2": area if area and area > 0 else None,
         })
     return n
@@ -251,6 +253,7 @@ def extract(month=None, cache_dir=CACHE_DIR, force=False):
         "ymin": col("ymin", pa.float64()),
         "xmax": col("xmax", pa.float64()),
         "ymax": col("ymax", pa.float64()),
+        "antimeridian": col("antimeridian", pa.bool_()),
         "extent_km": col("extent_km", pa.float32()),
         "area_km2": col("area_km2", pa.float32()),
     }).replace_schema_metadata({
@@ -301,8 +304,8 @@ def sizes_by_page(db, extract_file, pages_table):
     `pages_table` has page_id, qid, title (underscore form) and osm_relation
     (P402, nullable). A page matches an OSM object by QID, by English title,
     or by the relation id Wikidata names for it. Objects without a usable
-    extent (point-sized envelopes) do not count as a match, so such a page
-    keeps null size fields.
+    extent (point-sized envelopes, antimeridian spans) do not count as a
+    match, so such a page keeps null size fields.
     """
     rows = db.execute(f"""
         WITH osm AS (SELECT * FROM read_parquet('{extract_file}') WHERE extent_km > 0),

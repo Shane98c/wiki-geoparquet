@@ -225,7 +225,10 @@ are) gets no size, and neither does one whose only OSM object has a
 point-sized envelope: an object without a positive extent is not a match, so
 the page keeps null size fields. The build joins a page to OSM objects by QID, by `en:` title
 and by the P402 relation id Wikidata names for it; of several objects the
-largest extent wins. Measured on the top 2,000 natural-class rows by
+largest extent wins. An envelope wider than 180° straddles the antimeridian
+and says nothing about the feature's width (Russia, Antarctica and the United
+States all come back as −180..180), so such an object is flagged
+`antimeridian` in the extract and carries no extent. Measured on the top 2,000 natural-class rows by
 pageviews: 1,321 have `extent_km` (66 %) and 1,252 `area_km2` (63 %); over
 the whole 2026-10-09 release 534,702 rows (38.8 %) match. The unmatched
 are mostly peaks mapped as nodes (Everest, K2, Denali, Fuji) and seas and
