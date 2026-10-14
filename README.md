@@ -242,14 +242,17 @@ ranges with no OSM object (Gulf of Mexico, Appalachian Mountains).
 
 **Cache.** `scripts/osm_extent.py --extract` writes one extract per month,
 `data/osm/extent-YYYY-MM.parquet` (R2: `wiki-geoparquet/osm/extent-YYYY-MM.parquet`).
-The [`osm-extent.yml`](.github/workflows/osm-extent.yml) workflow runs it on
-the 3rd of each month and on dispatch, skipping a month already on R2. The
-build fetches the newest extract within six months (`--osm-dir`, `--osm-url`)
-and joins it; with none the three columns are null and the build goes on.
-Nothing queries OSM from inside the six-hour build job.
+Feature sizes change slowly, so the extract is refreshed by hand every few
+months with `make osm upload-osm`. QLever refuses GitHub-hosted runners (an
+nginx 403 by IP), so the [`osm-extent.yml`](.github/workflows/osm-extent.yml)
+workflow has no schedule and is kept for dispatch only. The build fetches the
+newest extract within twelve months (`--osm-dir`, `--osm-url`) and joins it;
+with none the three columns are null and the build goes on. Nothing queries
+OSM from inside the six-hour build job.
 
 ```sh
 make osm                                   # this month's extract from QLever
+make upload-osm                            # publish it to R2
 make osm-report OSM_SOURCE=data/prev/wikipedia_geotagged.parquet OSM_TOP=2000
 ```
 

@@ -1,15 +1,16 @@
-# Monthly bulk extract of every Wikipedia-linked OSM way and relation with
+# Bulk extract of every Wikipedia-linked OSM way and relation with
 # its envelope and area, from the QLever osm-planet SPARQL endpoint, to
 # osm/extent-YYYY-MM.parquet on R2. The build only joins the newest extract;
 # nothing queries OSM from inside the six-hour build job. A month already on
 # R2 is skipped, so a re-run is free.
 #
+# Dispatch only: QLever refuses GitHub-hosted runners (nginx 403 by IP), so the
+# extract is refreshed by hand with `make osm upload-osm`.
+#
 # Required repository secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
 name: OSM extent
 
 on:
-  schedule:
-    - cron: "41 5 3 * *" # 3rd of each month, ahead of the build on the 9th
   workflow_dispatch:
     inputs:
       month:

@@ -53,6 +53,10 @@ QID_LABEL_REQUEST_DELAY = 1.0
 # the next build, so only QIDs new to the dataset are asked of the API.
 QID_LABEL_CACHE = "data/qid_labels.json"
 USER_AGENT = "wiki-geoparquet/1.0 (github.com/Shane98c/wiki-geoparquet)"
+# DuckDB sizes its default limit from system RAM, not counting the page dicts this
+# process already holds. The cap covers its buffer manager, which spills to disk
+# past it; some operator state can still go over.
+DUCKDB_MEMORY_LIMIT = "2GB"
 
 COP_DEM_BASE = "https://copernicus-dem-30m.s3.amazonaws.com"
 
@@ -911,6 +915,14 @@ def sample_elevations(rows):
 
 # ── Cached enrichment ─────────────────────────────────────────
 
+def _duckdb():
+    import duckdb
+
+    db = duckdb.connect()
+    db.execute(f"SET memory_limit = '{DUCKDB_MEMORY_LIMIT}'")
+    return db
+
+
 def step7_pageviews(geo_pages, months_wanted, cache_dir, url_base):
     """Median monthly views per page from the cached month extracts.
 
@@ -924,7 +936,6 @@ def step7_pageviews(geo_pages, months_wanted, cache_dir, url_base):
         print("  WARNING: no pageview months available; pageviews_month will be null")
         return []
 
-    import duckdb
     import pyarrow as pa
 
     pids = [pid for pid, info in geo_pages.items() if info.get("title")]
@@ -932,7 +943,7 @@ def step7_pageviews(geo_pages, months_wanted, cache_dir, url_base):
         "page_id": pa.array(pids, type=pa.int32()),
         "title": pa.array([geo_pages[p]["title"] for p in pids], type=pa.string()),
     })
-    db = duckdb.connect()
+    db = _duckdb()
     db.register("pages", pages)
     views = pageviews.median_views(
         db, [pageviews.cache_path(m, cache_dir) for m in months], "pages")
@@ -954,7 +965,6 @@ def step8_osm_extent(geo_pages, cache_dir, url_base):
         print("  WARNING: no OSM extent extract available; extent columns will be null")
         return ""
 
-    import duckdb
     import pyarrow as pa
 
     pids = [pid for pid, info in geo_pages.items() if info.get("title")]
@@ -964,7 +974,7 @@ def step8_osm_extent(geo_pages, cache_dir, url_base):
         "title": pa.array([geo_pages[p]["title"] for p in pids], type=pa.string()),
         "osm_relation": pa.array([geo_pages[p].get("osm_relation") for p in pids], type=pa.int64()),
     })
-    db = duckdb.connect()
+    db = _duckdb()
     db.register("pages", pages)
     sizes = osm_extent.sizes_by_page(db, extract_file, "pages")
     db.close()
@@ -1209,8 +1219,7 @@ def main():
 
     # ── DuckDB: write GeoParquet with geometry column ──
     print(f"\n→ Writing GeoParquet...")
-    import duckdb
-    db = duckdb.connect()
+    db = _duckdb()
     db.execute("INSTALL spatial; LOAD spatial;")
 
     import pyarrow as pa
