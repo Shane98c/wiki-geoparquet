@@ -54,7 +54,8 @@ QID_LABEL_REQUEST_DELAY = 1.0
 QID_LABEL_CACHE = "data/qid_labels.json"
 USER_AGENT = "wiki-geoparquet/1.0 (github.com/Shane98c/wiki-geoparquet)"
 # DuckDB sizes its default limit from system RAM, not counting the page dicts this
-# process already holds; past this it spills to disk.
+# process already holds. The cap covers its buffer manager, which spills to disk
+# past it; some operator state can still go over.
 DUCKDB_MEMORY_LIMIT = "2GB"
 
 COP_DEM_BASE = "https://copernicus-dem-30m.s3.amazonaws.com"
