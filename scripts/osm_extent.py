@@ -300,10 +300,12 @@ def sizes_by_page(db, extract_file, pages_table):
 
     `pages_table` has page_id, qid, title (underscore form) and osm_relation
     (P402, nullable). A page matches an OSM object by QID, by English title,
-    or by the relation id Wikidata names for it.
+    or by the relation id Wikidata names for it. Objects without a usable
+    extent (point-sized envelopes) do not count as a match, so such a page
+    keeps null size fields.
     """
     rows = db.execute(f"""
-        WITH osm AS (SELECT * FROM read_parquet('{extract_file}')),
+        WITH osm AS (SELECT * FROM read_parquet('{extract_file}') WHERE extent_km > 0),
         hits AS (
             SELECT g.page_id, o.osm_type, o.osm_id, o.extent_km, o.area_km2
             FROM {pages_table} g JOIN osm o ON o.qid = g.qid

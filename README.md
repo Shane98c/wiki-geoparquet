@@ -221,7 +221,9 @@ language and title (the dump's underscore form), bbox, `extent_km` (the
 bbox's longer side) and `area_km2` (osm2rdf's area for closed ways and
 multipolygon relations; an open way such as a range drawn as a line has an
 extent and no area). A feature mapped only as a node (many ranges and plateaus
-are) gets no size. The build joins a page to OSM objects by QID, by `en:` title
+are) gets no size, and neither does one whose only OSM object has a
+point-sized envelope: an object without a positive extent is not a match, so
+the page keeps null size fields. The build joins a page to OSM objects by QID, by `en:` title
 and by the P402 relation id Wikidata names for it; of several objects the
 largest extent wins. Measured on the top 2,000 natural-class rows by
 pageviews: 1,321 have `extent_km` (66 %) and 1,252 `area_km2` (63 %); over
