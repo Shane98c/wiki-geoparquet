@@ -276,13 +276,7 @@ def extract_month(month, cache_dir=CACHE_DIR, force=False):
                 if not chunk:
                     continue
             bytes_read += len(chunk)
-            try:
-                consume(stream.feed(chunk))
-            except (OSError, EOFError) as e:
-                if seen_project:
-                    print(f"  decoder stopped at the end of the stream: {e}")
-                    break
-                raise
+            consume(stream.feed(chunk))
             if bytes_read % (256 * _CHUNK) < _CHUNK:
                 print(f"  ...{bytes_read / 2**30:.2f} GiB read, {project_lines:,} "
                       f"{PROJECT.decode()} rows, {len(by_page):,} pages "
@@ -291,7 +285,9 @@ def extract_month(month, cache_dir=CACHE_DIR, force=False):
     if not seen_project:
         raise RuntimeError(f"no {PROJECT.decode()} rows found in {url}")
     if not done:
-        print("  WARNING: stream ended inside the project block; the month may be partial")
+        raise RuntimeError(
+            f"the stream ended inside the {PROJECT.decode()} block of {url} after "
+            f"{project_lines:,} rows; refusing to write a partial month")
 
     pids = sorted(by_page)
     titles = sorted(by_title)
@@ -306,7 +302,7 @@ def extract_month(month, cache_dir=CACHE_DIR, force=False):
     os.makedirs(cache_dir, exist_ok=True)
     tmp = out + ".tmp"
     table = table.replace_schema_metadata({
-        "source": url, "project": PROJECT.decode(), "complete": str(done).lower(),
+        "source": url, "project": PROJECT.decode(), "complete": "true",
         "extracted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
     pq.write_table(table, tmp, compression="zstd")
@@ -333,6 +329,17 @@ def recent_months(n, today=None):
     return sorted(out)
 
 
+def _is_complete(path):
+    """A month extract is usable only when its writer saw the whole block."""
+    import pyarrow.parquet as pq
+
+    try:
+        meta = pq.read_schema(path).metadata or {}
+    except (OSError, ValueError):
+        return False
+    return meta.get(b"complete", b"true") == b"true"
+
+
 def ensure_months(n, cache_dir=CACHE_DIR, url_base=CACHE_URL_BASE):
     """Paths of the cached extracts for the last n months, fetching any the
     cache location has that the local dir lacks. Months nobody has are
@@ -355,7 +362,9 @@ def ensure_months(n, cache_dir=CACHE_DIR, url_base=CACHE_URL_BASE):
                 if os.path.exists(path + ".tmp"):
                     os.remove(path + ".tmp")
                 print(f"  {url}: {getattr(e, 'code', e)}")
-        if os.path.exists(path):
+        if os.path.exists(path) and not _is_complete(path):
+            print(f"  {path} is marked incomplete; ignoring it")
+        elif os.path.exists(path):
             have.append(month)
         else:
             missing.append(month)

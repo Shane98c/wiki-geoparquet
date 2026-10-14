@@ -175,7 +175,10 @@ without a page id, which the build joins on title). The
 month already there; a backfill is one `workflow_dispatch` per month. The dump
 is sorted by project and bzip2 blocks are independent, so the extractor
 binary-searches the file over HTTP ranges for the block where en.wikipedia
-starts and reads only that stretch (~0.9 GB of the 6 GB). One month took
+starts and reads only that stretch (~0.9 GB of the 6 GB). A stream that ends
+inside the en.wikipedia block is an error, not a partial file: nothing is
+written, the run fails, and a cached month whose metadata says
+`complete=false` is ignored by the build. One month took
 3–3.5 minutes on a residential 4–5 MiB/s line, download-bound; a GitHub
 runner, with faster network but two cores for the bzip2 decode and the line
 scan, is projected at 3–5 minutes.
