@@ -153,7 +153,10 @@ const map = new maplibregl.Map({
 
 `pageviews_month` is the median of a page's monthly totals over the last 12
 months (`--pageviews-months`), human traffic only. The median is the steady
-interest: a news spike or an anniversary inflates one month, not six.
+interest: a news spike or an anniversary inflates one month, not six. A month
+in which a page seen in another month has no dump row counts as zero, so a
+page viewed in one month of twelve has a median of zero, not that month's
+total; pages seen in no joined month are null.
 
 **Source.** The Wikimedia
 [pageview_complete](https://dumps.wikimedia.org/other/pageview_complete/readme.html)

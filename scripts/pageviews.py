@@ -370,7 +370,9 @@ def median_views(db, month_paths, pages_table):
 
     `pages_table` is a DuckDB-visible relation with page_id and title (the
     dump's underscore form). A month's total for a page is its page_id rows
-    plus any title-only rows carrying its title.
+    plus any title-only rows carrying its title; a month in which a page seen
+    in another month has no row counts as zero, so one busy month cannot
+    stand in for the median. Pages seen in no month stay out of the result.
     """
     if not month_paths:
         return {}
@@ -386,8 +388,15 @@ def median_views(db, month_paths, pages_table):
             FROM pv JOIN {pages_table} g ON pv.page_id IS NULL AND pv.title = g.title
             GROUP BY 1, 2
         ),
-        totals AS (SELECT page_id, month, sum(views) AS views FROM monthly GROUP BY 1, 2)
-        SELECT page_id, median(views) FROM totals GROUP BY 1
+        totals AS (SELECT page_id, month, sum(views) AS views FROM monthly GROUP BY 1, 2),
+        months AS (SELECT DISTINCT month FROM pv),
+        seen AS (SELECT DISTINCT page_id FROM totals),
+        filled AS (
+            SELECT s.page_id, m.month, coalesce(t.views, 0) AS views
+            FROM seen s CROSS JOIN months m
+            LEFT JOIN totals t ON t.page_id = s.page_id AND t.month = m.month
+        )
+        SELECT page_id, median(views) FROM filled GROUP BY 1
     """).fetchall()
     return {pid: min(int(round(v)), _INT32_MAX) for pid, v in rows}
 
