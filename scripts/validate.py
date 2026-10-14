@@ -9,6 +9,8 @@ Validates the GeoParquet file for:
   - gt_type coverage
   - Spot checks for well-known articles
   - GeoParquet metadata present
+  - pageviews_month: nullable integer, month range recorded, known pages in range
+  - extent_km / area_km2 / osm_source: nullable, consistent, known feature in range
 """
 
 import json
@@ -275,6 +277,73 @@ def main():
     print(f"    With image:         {with_image:>8,} ({100 * with_image / n:.0f}%)")
     print(f"    With related_images:{with_related:>8,} ({100 * with_related / n:.0f}%)")
     print(f"    With inlinks:       {with_inlinks:>8,} ({100 * with_inlinks / n:.0f}%)")
+
+    # Pageviews
+    print(f"\n→ Pageviews:")
+    col_types = {row[0]: row[1] for row in db.execute(
+        f"SELECT name, type FROM parquet_schema('{PARQUET_FILE}')"
+    ).fetchall()}
+    check("pageviews_month column exists", "pageviews_month" in col_types)
+    if "pageviews_month" in col_types:
+        check("pageviews_month is INT32", col_types["pageviews_month"] == "INT32",
+              f"got {col_types['pageviews_month']}")
+        months_row = db.execute(f"""
+            SELECT value FROM parquet_kv_metadata('{PARQUET_FILE}')
+            WHERE key = 'pageviews_months'
+        """).fetchone()
+        months = [m for m in (months_row[0].decode() if months_row else "").split(",") if m]
+        check("pageviews month range recorded", months_row is not None)
+        with_views, null_views = db.execute(f"""
+            SELECT count(pageviews_month), count(*) - count(pageviews_month)
+            FROM '{PARQUET_FILE}'
+        """).fetchone()
+        print(f"    months: {months[0] + '..' + months[-1] if months else '(none)'} "
+              f"({len(months)}); populated {with_views:,} ({100 * with_views / n:.0f}%), "
+              f"null {null_views:,}")
+        if months:
+            check("pageviews_month populated for >50%", with_views > n * 0.5,
+                  f"only {with_views:,} ({100 * with_views / n:.0f}%)")
+            check("pageviews_month is nullable (some rows null)", null_views > 0,
+                  "every row has a value; pages the dump never saw should be null")
+            for name, lo, hi in (("Mount Rushmore", 10_000, 1_000_000),
+                                 ("Coon Rapids Dam", 50, 5_000)):
+                row = db.execute(f"""
+                    SELECT pageviews_month FROM '{PARQUET_FILE}' WHERE label = ?
+                """, [name]).fetchone()
+                check(f"'{name}' pageviews_month in {lo:,}..{hi:,}",
+                      row is not None and row[0] is not None and lo <= row[0] <= hi,
+                      f"got {row[0] if row else 'no row'}")
+        else:
+            print("    WARNING: no pageview months were joined; value checks skipped")
+
+    # OSM extent
+    print(f"\n→ OSM extent:")
+    for col, typ in (("extent_km", "FLOAT"), ("area_km2", "FLOAT"), ("osm_source", "BYTE_ARRAY")):
+        check(f"{col} column is {typ}", col_types.get(col) == typ,
+              f"got {col_types.get(col, 'missing')}")
+    if {"extent_km", "area_km2", "osm_source"} <= set(col_types):
+        with_extent, with_area, inconsistent, bad = db.execute(f"""
+            SELECT
+                count(extent_km),
+                count(area_km2),
+                count(*) FILTER (WHERE (extent_km IS NULL) != (osm_source IS NULL)
+                                    OR (area_km2 IS NOT NULL AND extent_km IS NULL)),
+                count(*) FILTER (WHERE extent_km <= 0 OR extent_km > 20000 OR area_km2 <= 0)
+            FROM '{PARQUET_FILE}'
+        """).fetchone()
+        print(f"    extent_km {with_extent:,} ({100 * with_extent / n:.1f}%), "
+              f"area_km2 {with_area:,} ({100 * with_area / n:.1f}%)")
+        check("extent_km, area_km2 and osm_source agree", inconsistent == 0,
+              f"{inconsistent:,} rows have one without the other")
+        check("extent_km and area_km2 are positive and plausible", bad == 0,
+              f"{bad:,} rows out of range")
+        row = db.execute(f"""
+            SELECT extent_km, area_km2 FROM '{PARQUET_FILE}' WHERE label = 'Lake Superior'
+        """).fetchone()
+        if row and row[0] is not None:
+            check("Lake Superior extent_km ~560 km", 500 <= row[0] <= 700, f"got {row[0]}")
+        else:
+            print("    Lake Superior has no extent yet (cache not filled); skipped")
 
     # Spot checks
     print(f"\n→ Spot checks:")

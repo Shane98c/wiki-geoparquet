@@ -1,0 +1,93 @@
+# Monthly bulk extract of every Wikipedia-linked OSM way and relation with
+# its envelope and area, from the QLever osm-planet SPARQL endpoint, to
+# osm/extent-YYYY-MM.parquet on R2. The build only joins the newest extract;
+# nothing queries OSM from inside the six-hour build job. A month already on
+# R2 is skipped, so a re-run is free.
+#
+# Required repository secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+name: OSM extent
+
+on:
+  schedule:
+    - cron: "41 5 3 * *" # 3rd of each month, ahead of the build on the 9th
+  workflow_dispatch:
+    inputs:
+      month:
+        description: Month the extract is filed under (YYYY-MM); this month when empty
+        required: false
+        type: string
+      force:
+        description: Re-extract even when the month is already on R2
+        required: false
+        type: boolean
+        default: false
+
+env:
+  R2_BUCKET: wiki-geoparquet
+  R2_PUBLIC: https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the month
+        id: month
+        env:
+          REQUESTED: ${{ inputs.month }}
+        run: |
+          month="${REQUESTED:-$(date -u +%Y-%m)}"
+          echo "month=$month" >> "$GITHUB_OUTPUT"
+          echo "Extract for $month"
+
+      - name: Skip when the month is already on R2
+        id: state
+        env:
+          MONTH: ${{ steps.month.outputs.month }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" != "true" ] && curl -sfI "$R2_PUBLIC/osm/extent-$MONTH.parquet" >/dev/null; then
+            echo "osm/extent-$MONTH.parquet is already on R2"
+            echo "needs_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.state.outputs.needs_run == 'true'
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        if: steps.state.outputs.needs_run == 'true'
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        if: steps.state.outputs.needs_run == 'true'
+        run: uv sync --frozen
+
+      - name: Extract from QLever
+        if: steps.state.outputs.needs_run == 'true'
+        run: uv run python scripts/osm_extent.py --extract --month "${{ steps.month.outputs.month }}" --force
+        timeout-minutes: 90
+
+      - name: Upload the extract
+        if: steps.state.outputs.needs_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: osm-extent-${{ steps.month.outputs.month }}
+          path: data/osm/extent-${{ steps.month.outputs.month }}.parquet
+          retention-days: 30
+
+      - name: Publish to R2
+        if: steps.state.outputs.needs_run == 'true'
+        env:
+          MONTH: ${{ steps.month.outputs.month }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npm install -g wrangler
+          wrangler r2 object put "$R2_BUCKET/osm/extent-$MONTH.parquet" \
+            --file "data/osm/extent-$MONTH.parquet" \
+            --content-type application/vnd.apache.parquet --remote

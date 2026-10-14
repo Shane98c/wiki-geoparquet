@@ -1,0 +1,95 @@
+# One month of English Wikipedia pageviews → one small Parquet on R2.
+#
+# Kept apart from the monthly build on purpose: a build job is capped at six
+# hours and already streams ~80 GB of dumps, so the pageview dumps (~6 GB a
+# month) are read here, one month per run, and the build only joins the
+# extracts it finds at pageviews/en/YYYY-MM.parquet. A month already on R2 is
+# skipped, so a backfill is one dispatch per month.
+#
+# Required repository secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+name: Pageviews month
+
+on:
+  schedule:
+    - cron: "17 4 5 * *" # 5th of each month; the monthly dump lands in the first days
+  workflow_dispatch:
+    inputs:
+      month:
+        description: Month to extract (YYYY-MM); last month when empty
+        required: false
+        type: string
+      force:
+        description: Re-extract even when the month is already on R2
+        required: false
+        type: boolean
+        default: false
+
+env:
+  R2_BUCKET: wiki-geoparquet
+  R2_PUBLIC: https://pub-016504dd3a4d419a9c17a8939840935e.r2.dev
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the month
+        id: month
+        env:
+          REQUESTED: ${{ inputs.month }}
+        run: |
+          month="${REQUESTED:-$(date -u -d "$(date -u +%Y-%m-01) -1 month" +%Y-%m)}"
+          echo "month=$month" >> "$GITHUB_OUTPUT"
+          echo "Extracting $month"
+
+      - name: Skip when the month is already on R2
+        id: state
+        env:
+          MONTH: ${{ steps.month.outputs.month }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" != "true" ] && curl -sfI "$R2_PUBLIC/pageviews/en/$MONTH.parquet" >/dev/null; then
+            echo "pageviews/en/$MONTH.parquet is already on R2"
+            echo "needs_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.state.outputs.needs_run == 'true'
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        if: steps.state.outputs.needs_run == 'true'
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        if: steps.state.outputs.needs_run == 'true'
+        run: uv sync --frozen
+
+      - name: Extract the month
+        if: steps.state.outputs.needs_run == 'true'
+        run: uv run python scripts/pageviews.py --month "${{ steps.month.outputs.month }}" --force
+        timeout-minutes: 150
+
+      - name: Upload the extract
+        if: steps.state.outputs.needs_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pageviews-${{ steps.month.outputs.month }}
+          path: data/pageviews/en/${{ steps.month.outputs.month }}.parquet
+          retention-days: 30
+
+      - name: Publish to R2
+        if: steps.state.outputs.needs_run == 'true'
+        env:
+          MONTH: ${{ steps.month.outputs.month }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npm install -g wrangler
+          wrangler r2 object put "$R2_BUCKET/pageviews/en/$MONTH.parquet" \
+            --file "data/pageviews/en/$MONTH.parquet" \
+            --content-type application/vnd.apache.parquet --remote
