@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Pick the month
         id: month
@@ -59,7 +59,7 @@ jobs:
 
       - name: Install uv
         if: steps.state.outputs.needs_run == 'true'
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.3.0
 
       - name: Set up Python
         if: steps.state.outputs.needs_run == 'true'
@@ -76,7 +76,7 @@ jobs:
 
       - name: Upload the extract
         if: steps.state.outputs.needs_run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pageviews-${{ steps.month.outputs.month }}
           path: data/pageviews/en/${{ steps.month.outputs.month }}.parquet

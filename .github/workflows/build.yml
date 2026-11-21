@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.3.0
 
       - name: Set up Python
         run: uv python install 3.11
@@ -29,11 +29,11 @@ jobs:
         timeout-minutes: 330
 
       - name: Upload Wikidata cache
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wikidata-cache
           path: data/wikidata_cache.parquet
-          retention-days: 1
+          retention-days: 7
 
   build:
     needs: extract-wikidata
@@ -43,10 +43,10 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.3.0
 
       - name: Set up Python
         run: uv python install 3.11
@@ -56,14 +56,14 @@ jobs:
 
       - name: Cache tippecanoe binary
         id: cache-tippecanoe
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/tippecanoe
           key: tippecanoe-${{ runner.os }}-${{ runner.arch }}-${{ env.TIPPECANOE_REF }}
 
       - name: Install DuckDB CLI
         run: |
-          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
           unzip -o duckdb.zip -d ~/bin
           echo "$HOME/bin" >> $GITHUB_PATH
           ~/bin/duckdb -c "INSTALL spatial;"
@@ -84,7 +84,7 @@ jobs:
         timeout-minutes: 60
 
       - name: Download Wikidata cache
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wikidata-cache
           path: data
