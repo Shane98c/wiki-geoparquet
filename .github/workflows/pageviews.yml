@@ -59,7 +59,7 @@ jobs:
 
       - name: Install uv
         if: steps.state.outputs.needs_run == 'true'
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.3
 
       - name: Set up Python
         if: steps.state.outputs.needs_run == 'true'
