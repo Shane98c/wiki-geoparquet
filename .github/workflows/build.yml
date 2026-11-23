@@ -3,13 +3,19 @@ name: Monthly Build
 on:
   schedule:
     - cron: "43 3 9 * *" # 9th of each month, 03:43 UTC — avoids dump-server and Actions congestion around the 1st
-  workflow_dispatch: # manual trigger
+  workflow_dispatch:
+    inputs:
+      wikidata_run_id:
+        description: Reuse the wikidata-cache artifact from this run ID and skip the Wikidata extract
+        required: false
+        default: ""
 
 env:
   TIPPECANOE_REF: cb6cacef152e649d4500af1f4fa9b4c8f1f98d64  # post-2.79.0: includes --drop-by-attribute-as-needed
 
 jobs:
   extract-wikidata:
+    if: ${{ !inputs.wikidata_run_id }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -37,10 +43,12 @@ jobs:
 
   build:
     needs: extract-wikidata
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
       contents: write
+      actions: read
 
     steps:
       - uses: actions/checkout@v7
@@ -88,6 +96,8 @@ jobs:
         with:
           name: wikidata-cache
           path: data
+          run-id: ${{ inputs.wikidata_run_id || github.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Seed the QID label cache from the last release
         run: |
